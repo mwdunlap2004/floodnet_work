@@ -66,7 +66,7 @@ install.packages(c("tidyverse", "jsonlite", "leaflet", "htmltools", "lubridate")
 
 ## 6. Run The Project
 
-### Option A: Use Notebooks (recommended)
+Use Notebooks (recommended)
 
 Start Jupyter:
 ```bash
@@ -84,40 +84,13 @@ Then open notebooks from `Finalized_Scripts/`, for example:
 - `Finalized_Scripts/flood_duration.ipynb`
 - `Finalized_Scripts/finalized_lstm_modeling.ipynb`
 - `Finalized_Scripts/updated_method_storm_seperation.ipynb`
+- `Fina;ized_Scripts/parquet_floodnet_download.py`
 
-### Option B: Run Python scripts directly
-
-1) Download FloodNet depth data to parquet files:
-```bash
-python Test_Scripts/parquet_floodnet_download.py
-```
-This creates `floodnet_parquet_data/` in your current working directory.
-
-2) Generate a flood-depth map figure (requires input CSV):
-```bash
-python Test_Scripts/hw3_floodnet_graphs.py
-```
-Expected input file in working directory:
-- `full_dataset.csv`
-
-Expected output:
-- `floodnet_max_depth_fig.png`
-
-### Option C: Run R plotting scripts
-
-From R or RStudio, run:
-- `Test_Scripts/plotting_water_data.R`
-- `Test_Scripts/new_coding_plots.R`
-
-Expected CSVs for these scripts include:
-- `got_rain.csv`
-- `full_data.csv`
-- `master_data.csv`
 
 ## 7. Typical Workflow (Step-by-Step)
 
 1. Set up environment (Sections 1-5).
-2. Pull FloodNet data via `Test_Scripts/parquet_floodnet_download.py` (or notebook equivalents).
+2. Pull FloodNet data via `Fina;ized_Scripts/parquet_floodnet_download.py` (or notebook equivalents).
 3. Join/prepare data in `Finalized_Scripts/joining_parquets.ipynb`.
 4. Perform spatial enrichment with `Finalized_Scripts/spatial_join.ipynb`.
 5. Run analysis notebooks (`floodnet_eda.ipynb`, `flood_duration.ipynb`).
