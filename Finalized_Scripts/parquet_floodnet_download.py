@@ -148,6 +148,23 @@ def process_and_save_sensors(df_sensors, start_time, end_time, output_folder=Non
 # ---------------------------------------------------------
 # 4. Execution Block
 # ---------------------------------------------------------
+# 1. Identify the current directory (Handles both .py scripts and Jupyter)
+try:
+    # Use __file__ for standalone scripts
+    current_location = Path(__file__).resolve().parent
+except NameError:
+    # Use Current Working Directory for Jupyter/Interactive sessions
+    current_location = Path.cwd().resolve()
+
+# 2. Navigate to the actual Project Root
+# If current_location is 'Finalized_Scripts', move to the parent directory
+if current_location.name in ["Finalized_Scripts", "Test_Scripts", "scripts"]:
+    project_root = current_location.parent
+else:
+    project_root = current_location
+
+output_path = project_root / "Data_Files" / "floodnet_parquet_data"
+output_path.mkdir(parents=True, exist_ok=True)
 if __name__ == "__main__":
     # Get Metadata
     df_deployments = get_deployments()
@@ -166,7 +183,7 @@ if __name__ == "__main__":
         df_sensors=df_target_sensors,
         start_time=START_TIME,
         end_time=END_TIME,
-        output_folder=PROJECT_ROOT / "floodnet_parquet_data"
+        output_folder=output_path
     )
     
     print("\nProcess finished successfully.")
