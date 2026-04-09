@@ -1,0 +1,27 @@
+# Core data + API
+numpy
+pandas
+requests
+urllib3
+pyarrow
+duckdb
+
+# Visualization + mapping
+matplotlib
+seaborn
+folium
+
+# Geospatial
+geopandas
+shapely
+
+# Modeling + stats
+scikit-learn
+statsmodels
+optuna
+torch
+
+# Notebook environment
+jupyterlab
+notebook
+ipykernel
