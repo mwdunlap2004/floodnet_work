@@ -1,0 +1,4 @@
+/.conda
+/.venv
+/Data_Files
+/tmp_duckdb
