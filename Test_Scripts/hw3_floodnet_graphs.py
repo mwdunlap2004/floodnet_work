@@ -14,7 +14,29 @@ import pandas as pd
 import geopandas as gpd
 import matplotlib.pyplot as plt
 from shapely.geometry import Point
-import os
+from pathlib import Path
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+PLOTS_DIR = PROJECT_ROOT / "Images_or_plots"
+PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def resolve_input_path(filename):
+    """Resolve an input file from common project locations."""
+    candidates = [
+        Path.cwd() / filename,
+        PROJECT_ROOT / filename,
+        PROJECT_ROOT / "Data_Files" / filename,
+        PROJECT_ROOT / "Test_Scripts" / filename,
+        PROJECT_ROOT / "Finalized_Scripts" / filename,
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    searched = "\n".join(str(p) for p in candidates)
+    raise FileNotFoundError(f"Could not find '{filename}'. Searched:\n{searched}")
 
 def process_flood_data(csv_path):
     """
@@ -138,11 +160,8 @@ def create_publication_figure(gdf_sensors, gdf_basemap, output_path):
 
 def main():
     # Define file paths
-    # Assumes the merged dataset from your Jupyter Notebook is saved in your working directory
-    input_csv = "full_dataset.csv" 
-    
-    # Saving directly to the Mac desktop
-    output_png = "floodnet_max_depth_fig.png"
+    input_csv = resolve_input_path("full_dataset.csv")
+    output_png = PLOTS_DIR / "floodnet_max_depth_fig.png"
     
     print("Processing sensor flood data...")
     gdf_sensors = process_flood_data(input_csv)
@@ -151,7 +170,7 @@ def main():
     gdf_basemap = fetch_nyc_boundaries()
     
     print("Generating publication figure...")
-    create_publication_figure(gdf_sensors, gdf_basemap, output_png)
+    create_publication_figure(gdf_sensors, gdf_basemap, str(output_png))
 
     # Print the required figure caption to the console so it can be copied into the report
     print("\n" + "="*80)

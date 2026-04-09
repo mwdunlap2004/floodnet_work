@@ -5,9 +5,52 @@ library('htmltools')
 library('lubridate') # Added for date manipulation in new graphs
 
 # --- Data Loading & Cleaning ---
-rain_data = read.csv('got_rain.csv')
-full_data=read.csv('full_data.csv')
-master_data <- read.csv('master_data.csv')
+script_path_arg <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+script_dir <- if (length(script_path_arg) > 0) {
+  dirname(normalizePath(sub("^--file=", "", script_path_arg[1]), mustWork = FALSE))
+} else if (basename(getwd()) %in% c("Test_Scripts", "Finalized_Scripts")) {
+  normalizePath(file.path(getwd()), mustWork = FALSE)
+} else {
+  getwd()
+}
+
+project_root <- if (basename(script_dir) %in% c("Test_Scripts", "Finalized_Scripts")) {
+  normalizePath(file.path(script_dir, ".."), mustWork = FALSE)
+} else {
+  normalizePath(script_dir, mustWork = FALSE)
+}
+
+resolve_input_path <- function(filename) {
+  candidates <- c(
+    file.path(getwd(), filename),
+    file.path(project_root, filename),
+    file.path(project_root, "Data_Files", filename),
+    file.path(project_root, "Test_Scripts", filename),
+    file.path(project_root, "Finalized_Scripts", filename)
+  )
+  for (p in candidates) {
+    if (file.exists(p)) return(p)
+  }
+  stop(
+    paste0(
+      "Could not find input file: ", filename, "\nSearched:\n",
+      paste(candidates, collapse = "\n")
+    )
+  )
+}
+
+PLOT_DIR <- file.path(project_root, "Images_or_plots")
+if (!dir.exists(PLOT_DIR)) dir.create(PLOT_DIR, recursive = TRUE)
+
+save_plot <- function(filename, width = 10, height = 6, dpi = 300) {
+  out_path <- file.path(PLOT_DIR, filename)
+  ggsave(filename = out_path, plot = last_plot(), width = width, height = height, dpi = dpi)
+  message("Saved plot: ", out_path)
+}
+
+rain_data = read.csv(resolve_input_path('got_rain.csv'))
+full_data=read.csv(resolve_input_path('full_data.csv'))
+master_data <- read.csv(resolve_input_path('master_data.csv'))
 
 full_data <- full_data |> mutate(borough = str_trim(borough)) 
 rain_data <- rain_data |> mutate(borough = str_trim(borough)) 
@@ -21,6 +64,7 @@ rain_data |>
   summarise(mean_precip = mean(depth_inches, na.rm = TRUE)) |>
   ggplot(aes(x = borough, y = mean_precip)) +
   geom_col() + theme_classic()
+save_plot("avg_rainfall_by_borough_new.png")
 
 
 # SLIDE TITLE: Average Flood Depth by Borough
@@ -30,6 +74,7 @@ full_data |>
   summarise(mean_depth = mean(depth_inches, na.rm = TRUE)) |>
   ggplot(aes(x = borough, y = mean_depth)) +
   geom_col() + theme_classic()
+save_plot("avg_flood_depth_by_borough_new.png")
 
 
 # SLIDE TITLE: Top 10 Most Severe Flood Events (City-Wide)
@@ -39,6 +84,7 @@ full_data |> group_by(date) |>
   slice_max(mean_depth, n = 10) |> 
   ggplot(aes(x = date, y = mean_depth)) +
   geom_col() + theme_classic()
+save_plot("top10_citywide_flood_events_new.png")
 
 
 # SLIDE TITLE: Raw Timeline of Sensor Readings
@@ -47,6 +93,7 @@ full_data |>
   ggplot(aes(x = date, y = depth_inches, color = borough)) +
   geom_line() +
   theme_classic()
+save_plot("raw_sensor_timeline_new.png", width = 12, height = 7)
 
 
 # SLIDE TITLE: Longitudinal Flood Trends by Borough
@@ -57,6 +104,7 @@ full_data |>
   ggplot(aes(x = date, y = mean_depth, color = borough)) +
   geom_line() +
   theme_classic()
+save_plot("borough_longitudinal_flood_trends_new.png", width = 12, height = 7)
 
 
 # SLIDE TITLE: Flood Trends (Date Corrected)
@@ -67,6 +115,7 @@ df_plot <- full_data |>
 df_plot$date <- as.Date(df_plot$date)
 ggplot(df_plot, aes(x = date, y = mean_depth, color = borough, group = borough)) +
   geom_line() + theme_classic()
+save_plot("borough_flood_trends_date_corrected_new.png", width = 12, height = 7)
 
 
 # --- Focused Event Analysis ---
@@ -103,6 +152,7 @@ ggplot(plot_data, aes(x = factor(date), y = mean_precip)) +
     y = "Mean Precipitation (inches)"
   ) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+save_plot("selected_rainiest_days_citywide_new.png")
 
 
 # SLIDE TITLE: Storm Impact Breakdown by Borough
@@ -116,6 +166,7 @@ ggplot(plot_data, aes(x = factor(date), y = mean_precip, fill = borough)) +
   theme_classic() +
   labs(title = "Rainiest Selected Days by Borough", x = "Date", y = "Mean Precipitation") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+save_plot("selected_rainiest_days_by_borough_new.png", width = 12, height = 7)
 
 
 # --- Ranked Analysis ---
@@ -137,6 +188,7 @@ full_data |>
     y = "Mean Depth (inches)"
   ) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+save_plot("top10_days_per_borough_ranked_new.png", width = 12, height = 8)
 
 
 # SLIDE TITLE: Shared vs. Localized Storm Events
@@ -173,6 +225,7 @@ ggplot(plot_data, aes(x = date_label, y = mean_depth, fill = event_type)) +
     axis.text.x = element_text(angle = 45, hjust = 1),
     legend.position = "top"
   )
+save_plot("shared_vs_local_storm_events_new.png", width = 12, height = 8)
 
 
 # --- Geospatial & Street Analysis ---
@@ -194,7 +247,7 @@ top_gage_events <- daily_stats |>
 
 pal <- colorNumeric(palette = "Blues", domain = top_gage_events$daily_mean)
 
-leaflet(data = top_gage_events) |>
+flood_map <- leaflet(data = top_gage_events) |>
   addProviderTiles(providers$CartoDB.Positron) |> 
   addCircleMarkers(
     ~longitude, ~latitude,
@@ -219,6 +272,13 @@ leaflet(data = top_gage_events) |>
     title = "Max Daily Avg (in)",
     opacity = 1
   )
+
+htmlwidgets::saveWidget(
+  flood_map,
+  file = file.path(PLOT_DIR, "peak_flood_events_map_new.html"),
+  selfcontained = TRUE
+)
+message("Saved map: ", file.path(PLOT_DIR, "peak_flood_events_map_new.html"))
 
 
 # SLIDE TITLE: Top 20 Most Flooded Intersections
@@ -245,6 +305,7 @@ ggplot(street_ranking, aes(x = avg_flood_depth, y = reorder(name, avg_flood_dept
     axis.text.y = element_text(size = 10), 
     plot.title = element_text(face = "bold")
   )
+save_plot("top20_most_flooded_intersections_new.png", width = 12, height = 8)
 
 
 # SLIDE TITLE: Top 20 Flooded Streets (Aggregated)
@@ -285,6 +346,7 @@ ggplot(street_ranking, aes(x = avg_flood_depth, y = reorder(street_name, avg_flo
     axis.text.y = element_text(size = 10),
     legend.position = "bottom"
   )
+save_plot("top20_rainiest_streets_aggregated_new.png", width = 12, height = 8)
 
 
 # SLIDE TITLE: Chronic Flooding Analysis (All Days)
@@ -320,3 +382,4 @@ ggplot(street_ranking_all, aes(x = avg_depth_overall, y = reorder(street_name, a
     x = "Average Depth (inches)",
     y = NULL
   )
+save_plot("top20_streets_chronic_flooding_all_days_new.png", width = 12, height = 8)

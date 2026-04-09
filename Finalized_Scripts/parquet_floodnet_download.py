@@ -8,6 +8,11 @@ import numpy as np
 import pandas as pd
 import os
 import gc
+from pathlib import Path
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
 
 # ---------------------------------------------------------
 # 1. Fetch Deployment Metadata
@@ -98,15 +103,17 @@ def query_depth_data_chunked(deployment_id, start_time, end_time, chunk_days=2, 
 # ---------------------------------------------------------
 # 3. Process, Save, and Checkpoint Logic
 # ---------------------------------------------------------
-def process_and_save_sensors(df_sensors, start_time, end_time, output_folder="floodnet_parquet_data"):
+def process_and_save_sensors(df_sensors, start_time, end_time, output_folder=None):
     '''
     Loops through sensors, skipping any that already have a saved Parquet file.
     '''
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+    if output_folder is None:
+        output_folder = PROJECT_ROOT / "floodnet_parquet_data"
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
         
     # Checkpoint: Identify sensors already downloaded
-    completed_ids = [f.replace('.parquet', '') for f in os.listdir(output_folder) if f.endswith('.parquet')]
+    completed_ids = [p.stem for p in output_folder.glob("*.parquet")]
     df_to_do = df_sensors[~df_sensors['deployment_id'].isin(completed_ids)]
     
     print(f"\nCheckpoint Status: {len(completed_ids)} sensors found. {len(df_to_do)} remaining to pull.")
@@ -129,7 +136,7 @@ def process_and_save_sensors(df_sensors, start_time, end_time, output_folder="fl
             df_meta = pd.DataFrame([row_data])
             df_final = pd.merge(df_sensor, df_meta, on='deployment_id', how='left')
             
-            file_path = os.path.join(output_folder, f"{deployment_id}.parquet")
+            file_path = output_folder / f"{deployment_id}.parquet"
             df_final.to_parquet(file_path, index=False)
             print(f"  -> Saved {len(df_final)} rows.")
             
@@ -159,7 +166,7 @@ if __name__ == "__main__":
         df_sensors=df_target_sensors,
         start_time=START_TIME,
         end_time=END_TIME,
-        output_folder="floodnet_parquet_data"
+        output_folder=PROJECT_ROOT / "floodnet_parquet_data"
     )
     
     print("\nProcess finished successfully.")
