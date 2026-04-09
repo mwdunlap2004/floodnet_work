@@ -49,13 +49,7 @@ python -m pip install --upgrade pip
 This repo currently does not include a pinned requirements file, so install the packages used by the notebooks/scripts:
 
 ```bash
-pip install \
-  jupyterlab notebook ipykernel \
-  requests urllib3 numpy pandas pyarrow duckdb \
-  matplotlib seaborn folium \
-  geopandas shapely \
-  scikit-learn statsmodels optuna \
-  torch
+pip install -r requirements.txt
 ```
 
 Notes:
