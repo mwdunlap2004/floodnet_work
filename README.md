@@ -90,12 +90,13 @@ Then open notebooks from `Finalized_Scripts/`, for example:
 ## 7. Typical Workflow (Step-by-Step)
 
 1. Set up environment (Sections 1-5).
-2. Pull FloodNet data via `Fina;ized_Scripts/parquet_floodnet_download.py` (or notebook equivalents).
+2. Pull FloodNet data via `Finalized_Scripts/parquet_floodnet_download.py` (or notebook equivalents).
 3. Join/prepare data in `Finalized_Scripts/joining_parquets.ipynb`.
 4. Perform spatial enrichment with `Finalized_Scripts/spatial_join.ipynb`.
-5. Run analysis notebooks (`floodnet_eda.ipynb`, `flood_duration.ipynb`).
-6. Run modeling notebooks (`finalized_lstm_modeling.ipynb`).
-7. Save/inspect figures in `Images_or_plots/`.
+5. Delineate Storms with `Finalized_Scripts/spatial_join.ipynb`.
+6. Run analysis notebooks (`floodnet_eda.ipynb`, `flood_duration.ipynb`).
+7. Run modeling notebooks (`finalized_lstm_modeling.ipynb`).
+8. Save/inspect figures in `Images_or_plots/`.
 
 ## Troubleshooting
 
