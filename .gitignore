@@ -1,6 +1,5 @@
 /.conda
 /.venv
-/Data_Files
 /tmp_duckdb
 .DS_Store
 .vscode/settings.json
