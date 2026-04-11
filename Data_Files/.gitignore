@@ -3,3 +3,4 @@
 
 # Except this ignore file itself
 !.gitignore
+!floodnet_hpo.db

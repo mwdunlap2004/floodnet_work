@@ -503,12 +503,27 @@ N_TRIALS_LR   = 40
 N_TRIALS_ANN  = 35
 N_TRIALS_LSTM = 15
  
+# ── Define the database path FIRST ──────────────────────────────────────────
+DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/floodnet_hpo.db"
+
 print("🔎 [1/3] Log-Ridge baseline …")
-study_lr = optuna.create_study(direction="maximize", sampler=TPESampler(seed=SEED))
+study_lr = optuna.create_study(
+    study_name="log_ridge",
+    direction="maximize", 
+    sampler=TPESampler(seed=SEED),
+    storage=DB,
+    load_if_exists=True
+)
 study_lr.optimize(objective_log_reg, n_trials=N_TRIALS_LR)
  
 print("🔎 [2/3] Residual ANN …")
-study_ann = optuna.create_study(direction="maximize", sampler=TPESampler(seed=SEED))
+study_ann = optuna.create_study(
+    study_name="res_ann",
+    direction="maximize", 
+    sampler=TPESampler(seed=SEED),
+    storage=DB,
+    load_if_exists=True
+)
 study_ann.optimize(objective_ann, n_trials=N_TRIALS_ANN)
 
 # %%
@@ -565,7 +580,13 @@ Y_STD  = torch.tensor(scaler_y.scale_, device=PRIMARY, dtype=torch.float32)
 print(f"✅ Y_MEAN={Y_MEAN.item():.4f}, Y_STD={Y_STD.item():.4f} — ready for LSTM search")
 
 print("🔎 [3/3] Attention-LSTM …")
-study_lstm = optuna.create_study(direction="maximize", sampler=TPESampler(seed=SEED))
+study_lstm = optuna.create_study(
+    study_name="attn_lstm",
+    direction="maximize", 
+    sampler=TPESampler(seed=SEED),
+    storage=DB,
+    load_if_exists=True
+)
 study_lstm.optimize(objective_lstm, n_trials=N_TRIALS_LSTM)
  
 print(f"\n{'─'*45}")
@@ -575,32 +596,3 @@ print(f"{'Log-Ridge':20} {study_lr.best_value:>10.4f}")
 print(f"{'Res-ANN':20} {study_ann.best_value:>10.4f}")
 print(f"{'Attn-LSTM':20} {study_lstm.best_value:>10.4f}")
 print(f"{'─'*45}")
-
-# %%
-DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/floodnet_hpo.db"
-
-study_lr = optuna.create_study(
-    study_name="log_ridge",
-    direction="maximize",
-    sampler=TPESampler(seed=SEED),
-    storage=DB,
-    load_if_exists=True
-)
-
-study_ann = optuna.create_study(
-    study_name="res_ann",
-    direction="maximize",
-    sampler=TPESampler(seed=SEED),
-    storage=DB,
-    load_if_exists=True
-)
-
-study_lstm = optuna.create_study(
-    study_name="attn_lstm",
-    direction="maximize",
-    sampler=TPESampler(seed=SEED),
-    storage=DB,
-    load_if_exists=True
-)
-
-
