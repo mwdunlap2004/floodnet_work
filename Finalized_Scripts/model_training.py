@@ -513,7 +513,7 @@ print("\n🏋️  [3/3] Training Attention-LSTM …")
 require_vram(gb_needed=2.0, label="Attn-LSTM init")
  
 WINDOW_FINAL = bp_lstm['window_size']
-EPOCHS_LSTM  = 45
+EPOCHS_LSTM  = 60
 PATIENCE_L   = 8
  
 y_tv_sc = scaler_y.transform(train_val_df[[TARGET]]).astype('float32')

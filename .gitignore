@@ -4,3 +4,11 @@
 .DS_Store
 .vscode/settings.json
 .vscode/tasks.json
+checkpoints/ann_best.pt
+checkpoints/ann_final.pt
+checkpoints/log_ridge_final.pkl
+checkpoints/lstm_best.pt
+checkpoints/lstm_final.pt
+checkpoints/scaler_X.pkl
+checkpoints/scaler_y.pkl
+results/sensor_spatial_distribution.html
