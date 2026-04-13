@@ -12,3 +12,4 @@ checkpoints/lstm_final.pt
 checkpoints/scaler_X.pkl
 checkpoints/scaler_y.pkl
 results/sensor_spatial_distribution.html
+GEMINI.md
