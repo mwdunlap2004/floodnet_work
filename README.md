@@ -1,62 +1,91 @@
 # FloodNet Work
 
-Hydroinformatics project files for working with NYC FloodNet sensor data, including:
-- API data extraction
-- parquet joining and spatial workflows
-- EDA and flood-duration analysis
-- LSTM modeling notebooks
-- Python and R plotting scripts
+Hydroinformatics workflows for NYC FloodNet sensor data, including:
+- API extraction and parquet checkpointing
+- dataset joining and spatial weather enrichment
+- storm delineation and event-level EDA
+- flood-duration analysis and model training
 
 ## Project Structure
 
-- `Finalized_Scripts/`: primary project notebooks (cleaner/final workflow versions)
-- `Test_Scripts/`: exploratory notebooks and standalone Python/R scripts
-- `Images_or_plots/`: saved output figures
+- `Finalized_Scripts/`: primary notebooks and Python scripts for the core pipeline
+- `Test_Scripts/`: exploratory notebooks and standalone experiments
+- `Data_Files/`: parquet datasets and training databases
+- `Images_or_plots/`: exported figures
+- `results/`: run logs and presentation outputs
 
 ## 1. Prerequisites
 
-Install:
 - Python `3.10+` (recommended: `3.11`)
 - `pip`
 - Jupyter Notebook or JupyterLab
 - Optional for R scripts: R `4.2+`
 
-## 2. Clone And Enter The Project
+## 2. Quickstart (5 Minutes)
 
 ```bash
-git clone <(https://github.com/mwdunlap2004/floodnet_work.git)>
+git clone https://github.com/mwdunlap2004/floodnet_work.git
 cd floodnet_work
-```
-
-## 3. Create A Python Virtual Environment
-
-Mac/Linux:
-```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
+pip install -r requirements.txt
+jupyter lab
 ```
 
 Windows (PowerShell):
+
 ```powershell
+git clone https://github.com/mwdunlap2004/floodnet_work.git
+cd floodnet_work
 py -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-```
-
-## 4. Install Python Dependencies
-
-This repo currently does not include a pinned requirements file, so install the packages used by the notebooks/scripts:
-
-```bash
 pip install -r requirements.txt
+jupyter lab
 ```
 
 Notes:
 - `geopandas` may require system GIS libraries on some machines.
-- `torch` install can vary by OS/GPU. If needed, install from the official PyTorch selector: [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
+- `torch` install can vary by OS/GPU. If needed, use the official selector: [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
 
-## 5. (Optional) Install R Dependencies
+## 3. Data Inputs (Expected Files)
+
+Most finalized notebooks/scripts expect files under `Data_Files/`:
+
+Primary shared data location:
+- Google Drive folder: [FloodNet project data](https://drive.google.com/drive/folders/1N-w9N6aYujfRRqcTfod1GltTaggaVSnx?usp=share_link)
+- Download/sync these files into local `Data_Files/` before running the notebooks.
+
+| File | Produced By | Used By |
+|---|---|---|
+| `floodnet_parquet_data/*.parquet` | `Finalized_Scripts/parquet_floodnet_download.py` | `Finalized_Scripts/joining_parquets.ipynb` |
+| `floodnet_full_dataset_merged.parquet` | `Finalized_Scripts/joining_parquets.ipynb` | intermediate checks |
+| `floodnet_floods_only.parquet` | `Finalized_Scripts/joining_parquets.ipynb` | `Finalized_Scripts/flood_duration.ipynb` |
+| `floodnet_full_dataset_merged_with_weather.parquet` | `Finalized_Scripts/spatial_join.ipynb` | `Finalized_Scripts/updated_method_storm_seperation.ipynb` |
+| `delineated_storms.parquet` | `Finalized_Scripts/updated_method_storm_seperation.ipynb` | `Finalized_Scripts/floodnet_eda.ipynb`, `Finalized_Scripts/finalized_lstm_modeling.ipynb` |
+| `floodnet_hpo.db` | hyperparameter search scripts/notebooks | modeling scripts/notebooks |
+
+## 4. Notebook Run Order
+
+Use this order for a clean, reproducible workflow:
+
+1. `Finalized_Scripts/parquet_floodnet_download.py`
+2. `Finalized_Scripts/joining_parquets.ipynb`
+3. `Finalized_Scripts/spatial_join.ipynb`
+4. `Finalized_Scripts/updated_method_storm_seperation.ipynb`
+5. `Finalized_Scripts/floodnet_eda.ipynb`
+6. `Finalized_Scripts/flood_duration.ipynb`
+7. `Finalized_Scripts/finalized_lstm_modeling.ipynb` (or `Finalized_Scripts/model_training.py`)
+
+## 5. Outputs
+
+- `Images_or_plots/`: static figures (for example model comparison and duration plots)
+- `results/`: model run artifacts/logs
+- `results/presentation_figures/`: exported presentation figures from `floodnet_eda.ipynb`
+- `checkpoints/`: trained model checkpoints and scalers from training scripts
+
+## 6. Optional R Dependencies
 
 If you plan to run `.R` scripts in `Test_Scripts/`:
 
@@ -64,43 +93,9 @@ If you plan to run `.R` scripts in `Test_Scripts/`:
 install.packages(c("tidyverse", "jsonlite", "leaflet", "htmltools", "lubridate"))
 ```
 
-## 6. Run The Project
-
-Use Notebooks (recommended)
-
-Start Jupyter:
-```bash
-jupyter lab
-```
-or
-```bash
-jupyter notebook
-```
-
-Then open notebooks from `Finalized_Scripts/`, for example:
-- `Finalized_Scripts/floodnet_eda.ipynb`
-- `Finalized_Scripts/joining_parquets.ipynb`
-- `Finalized_Scripts/spatial_join.ipynb`
-- `Finalized_Scripts/flood_duration.ipynb`
-- `Finalized_Scripts/finalized_lstm_modeling.ipynb`
-- `Finalized_Scripts/updated_method_storm_seperation.ipynb`
-- `Fina;ized_Scripts/parquet_floodnet_download.py`
-
-
-## 7. Typical Workflow (Step-by-Step)
-
-1. Set up environment (Sections 1-5).
-2. Pull FloodNet data via `Finalized_Scripts/parquet_floodnet_download.py` (or notebook equivalents).
-3. Join/prepare data in `Finalized_Scripts/joining_parquets.ipynb`.
-4. Perform spatial enrichment with `Finalized_Scripts/spatial_join.ipynb`.
-5. Delineate Storms with `Finalized_Scripts/spatial_join.ipynb`.
-6. Run analysis notebooks (`floodnet_eda.ipynb`, `flood_duration.ipynb`).
-7. Run modeling notebooks (`finalized_lstm_modeling.ipynb`).
-8. Save/inspect figures in `Images_or_plots/`.
-
 ## Troubleshooting
 
-- `ModuleNotFoundError`: install missing package into the active `.venv`.
-- Jupyter kernel mismatch: select the virtual environment kernel in notebook UI.
-- GeoPandas install issues: install `geopandas` with conda/mamba if pip build fails.
-- Slow API pulls: script includes retries; rerun safely (completed parquet files are checkpointed/skipped).
+- `ModuleNotFoundError`: install missing packages into the active `.venv`.
+- Jupyter kernel mismatch: select the `.venv` kernel in notebook UI.
+- GeoPandas install issues: try conda/mamba for geospatial dependencies.
+- Slow API pulls: the downloader includes retries and checkpointed parquet outputs.
