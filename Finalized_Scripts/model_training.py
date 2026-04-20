@@ -653,6 +653,47 @@ with open(log_path, "w") as f:
     json.dump(run_log, f, indent=2)
 print(f"\n✅ Run log saved → {log_path}")
 
+# --- Row-level errors for Log-Ridge + Res-ANN (aligned to test_df rows) ---
+examples = test_df[["deployment_id", "time", STORM_COL, TARGET]].copy()
+examples["pred_log_ridge"] = lr_preds
+examples["pred_res_ann"] = ann_preds
+
+for model in ["log_ridge", "res_ann"]:
+    examples[f"err_{model}"] = examples[TARGET] - examples[f"pred_{model}"]
+    examples[f"abs_err_{model}"] = examples[f"err_{model}"].abs()
+
+# "Got right" threshold (edit as needed)
+HIT_TOL = 0.25  # inches
+examples["hit_log_ridge"] = examples["abs_err_log_ridge"] <= HIT_TOL
+examples["hit_res_ann"] = examples["abs_err_res_ann"] <= HIT_TOL
+
+# Top examples
+best_ann  = examples.nsmallest(30, "abs_err_res_ann")
+worst_ann = examples.nlargest(30, "abs_err_res_ann")
+best_lr   = examples.nsmallest(30, "abs_err_log_ridge")
+worst_lr  = examples.nlargest(30, "abs_err_log_ridge")
+
+# Storm-level failure cases
+storm_fail_ann = (
+    examples.groupby([STORM_COL, "deployment_id"], as_index=False)
+    .agg(mae_ann=("abs_err_res_ann", "mean"),
+         peak_obs=(TARGET, "max"),
+         peak_pred_ann=("pred_res_ann", "max"),
+         n_rows=("time", "count"))
+    .sort_values("mae_ann", ascending=False)
+)
+
+# Save for review
+out_dir = RESULTS_DIR / "error_examples"
+out_dir.mkdir(parents=True, exist_ok=True)
+examples.to_parquet(out_dir / "test_predictions_errors.parquet", index=False)
+best_ann.to_csv(out_dir / "best_ann_examples.csv", index=False)
+worst_ann.to_csv(out_dir / "worst_ann_examples.csv", index=False)
+best_lr.to_csv(out_dir / "best_logridge_examples.csv", index=False)
+worst_lr.to_csv(out_dir / "worst_logridge_examples.csv", index=False)
+storm_fail_ann.head(100).to_csv(out_dir / "storm_failures_ann.csv", index=False)
+
+
 # %%
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 12 │ Visualisation
@@ -748,30 +789,36 @@ ax3.set_ylabel("Predicted (in)", fontsize=10)
 ax3.legend(fontsize=9); ax3.grid(True, color=COLORS['grid'], alpha=0.5)
 
 # %%
-# ── Panel D: Grouped metric bars (NSE & KGE per model) ───────────────────────
-ax4    = fig.add_subplot(gs[2, 1])
+# ── Panel D: Dumbbell metric comparison (NSE vs KGE per model) ───────────────
+ax4 = fig.add_subplot(gs[2, 1])
 models = metrics_df.index.tolist()
-x_pos  = np.arange(len(models))
-bw     = 0.32
-b1 = ax4.bar(x_pos - bw / 2, metrics_df['NSE'], bw,
-             label='NSE', color='#2980b9', alpha=0.87)
-b2 = ax4.bar(x_pos + bw / 2, metrics_df['KGE'], bw,
-             label='KGE', color='#c0392b', alpha=0.87)
-ax4.axhline(0,    color='black', lw=0.8, ls='--', alpha=0.5)
-ax4.axhline(0.5,  color='green', lw=0.8, ls=':',  alpha=0.6, label='0.5 (satisfactory)')
-ax4.axhline(0.65, color='green', lw=0.8, ls='--', alpha=0.4, label='0.65 (good)')
-ax4.set_xticks(x_pos)
-ax4.set_xticklabels(models, fontsize=10)
-ax4.set_ylim(-0.15, 1.08)
-ax4.set_ylabel("Score  (1 = perfect)", fontsize=10)
-ax4.set_title("Model Performance: NSE & KGE", fontsize=12, fontweight='bold')
-ax4.legend(fontsize=8, loc='lower right', framealpha=0.9)
-ax4.grid(True, color=COLORS['grid'], alpha=0.5, axis='y')
- 
-for bar in list(b1) + list(b2):
-    h = bar.get_height()
-    ax4.text(bar.get_x() + bar.get_width() / 2, h + 0.012,
-             f"{h:.3f}", ha='center', va='bottom', fontsize=8, fontweight='bold')
+y_pos = np.arange(len(models))
+nse_vals = metrics_df.loc[models, "NSE"].values
+kge_vals = metrics_df.loc[models, "KGE"].values
+
+# Reference bands/lines for quick interpretation
+ax4.axvspan(0.65, 1.0, color="#d9f2d9", alpha=0.35, lw=0)
+ax4.axvline(0.0, color="black", lw=0.9, ls="--", alpha=0.6)
+ax4.axvline(0.5, color="green", lw=0.9, ls=":",  alpha=0.7)
+ax4.axvline(0.65, color="green", lw=0.9, ls="--", alpha=0.55)
+
+for i, (nse_v, kge_v) in enumerate(zip(nse_vals, kge_vals)):
+    ax4.plot([kge_v, nse_v], [i, i], color="#7f8c8d", lw=2.0, alpha=0.85)
+
+ax4.scatter(nse_vals, y_pos, s=75, color="#2980b9", label="NSE", zorder=3)
+ax4.scatter(kge_vals, y_pos, s=75, color="#c0392b", marker="D", label="KGE", zorder=3)
+
+for i, (nse_v, kge_v) in enumerate(zip(nse_vals, kge_vals)):
+    ax4.text(nse_v + 0.02, i + 0.06, f"{nse_v:.3f}", fontsize=8, color="#1f4e79")
+    ax4.text(kge_v + 0.02, i - 0.16, f"{kge_v:.3f}", fontsize=8, color="#7f1d1d")
+
+ax4.set_yticks(y_pos)
+ax4.set_yticklabels(models, fontsize=10)
+ax4.set_xlim(-0.65, 1.02)
+ax4.set_xlabel("Skill Score  (1 = perfect)", fontsize=10)
+ax4.set_title("Model Skill: NSE vs KGE", fontsize=12, fontweight="bold")
+ax4.grid(True, color=COLORS["grid"], alpha=0.5, axis="x")
+ax4.legend(fontsize=8, loc="lower right", framealpha=0.9)
  
 fig.suptitle(
     "NYC FloodNet — Flood Depth Prediction Model Shootout\n"
@@ -806,5 +853,4 @@ print(f"""
 if __name__ == "__main__":
     pass  # All blocks above run unconditionally in Jupyter.
           # Wrap in main() if converting to a pure .py script.
-
 
