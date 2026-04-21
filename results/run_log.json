@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-04-21T07:38:46.801336",
+  "timestamp": "2026-04-21T08:56:40.940678",
   "best_params": {
     "log_ridge": {
       "alpha": 2.278456787920009,
@@ -22,23 +22,23 @@
   "test_metrics": {
     "NSE": {
       "Log-Ridge": -0.0003,
-      "Res-ANN": 0.0385,
-      "Attn-LSTM": 0.0709
+      "Res-ANN": 0.0403,
+      "Attn-LSTM": 0.0743
     },
     "KGE": {
       "Log-Ridge": -0.4794,
-      "Res-ANN": -0.1795,
-      "Attn-LSTM": -0.3891
+      "Res-ANN": -0.1734,
+      "Attn-LSTM": -0.3759
     },
     "RMSE": {
       "Log-Ridge": 1.2531,
-      "Res-ANN": 1.2285,
-      "Attn-LSTM": 1.2362
+      "Res-ANN": 1.2274,
+      "Attn-LSTM": 1.2339
     },
     "PBIAS": {
       "Log-Ridge": 80.59,
-      "Res-ANN": 11.54,
-      "Attn-LSTM": 92.26
+      "Res-ANN": 9.85,
+      "Attn-LSTM": 90.85
     }
   },
   "data": {
