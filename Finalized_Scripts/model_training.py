@@ -226,7 +226,13 @@ else:
 
 # %%
 # ── Drop incomplete rows, cast to float32 ────────────────────────────────────
-df_clean = df[FEATURES + [TARGET, STORM_COL]].dropna().copy()
+# Keep optional metadata columns for downstream diagnostics/exports.
+META_CANDIDATES = ["deployment_id", "time", "timestamp", "datetime"]
+META_COLS = [c for c in META_CANDIDATES if c in df.columns]
+
+df_clean = df[FEATURES + [TARGET, STORM_COL] + META_COLS].dropna(
+    subset=FEATURES + [TARGET, STORM_COL]
+).copy()
 df_clean[FEATURES + [TARGET]] = df_clean[FEATURES + [TARGET]].astype('float32')
  
 # ── Chronological storm-level split ──────────────────────────────────────────
@@ -654,7 +660,27 @@ with open(log_path, "w") as f:
 print(f"\n✅ Run log saved → {log_path}")
 
 # --- Row-level errors for Log-Ridge + Res-ANN (aligned to test_df rows) ---
-examples = test_df[["deployment_id", "time", STORM_COL, TARGET]].copy()
+deployment_col = "deployment_id" if "deployment_id" in test_df.columns else STORM_COL
+time_col = None
+for candidate in ["time", "timestamp", "datetime"]:
+    if candidate in test_df.columns:
+        time_col = candidate
+        break
+
+base_cols = [deployment_col, STORM_COL, TARGET]
+if time_col is not None:
+    base_cols.insert(1, time_col)
+base_cols = list(dict.fromkeys(base_cols))  # preserve order, remove duplicates
+
+examples = test_df[base_cols].copy()
+if deployment_col != "deployment_id":
+    examples["deployment_id"] = test_df[deployment_col].values
+if time_col is not None and time_col != "time":
+    examples["time"] = test_df[time_col].values
+
+if "time" not in examples.columns:
+    examples["time"] = np.arange(len(examples), dtype=np.int64)
+
 examples["pred_log_ridge"] = lr_preds
 examples["pred_res_ann"] = ann_preds
 
@@ -679,7 +705,7 @@ storm_fail_ann = (
     .agg(mae_ann=("abs_err_res_ann", "mean"),
          peak_obs=(TARGET, "max"),
          peak_pred_ann=("pred_res_ann", "max"),
-         n_rows=("time", "count"))
+         n_rows=(TARGET, "size"))
     .sort_values("mae_ann", ascending=False)
 )
 
@@ -853,4 +879,3 @@ print(f"""
 if __name__ == "__main__":
     pass  # All blocks above run unconditionally in Jupyter.
           # Wrap in main() if converting to a pure .py script.
-
