@@ -14,3 +14,4 @@ checkpoints/scaler_y.pkl
 results/sensor_spatial_distribution.html
 GEMINI.md
 Finalized_Scripts/__pycache__/model_training.cpython-313.pyc
+Finalized_Scripts/__pycache__/hpo_search.cpython-313.pyc

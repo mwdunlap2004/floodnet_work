@@ -194,6 +194,91 @@ print(f"   Log-Ridge : best NSE {study_lr.best_value:.4f}  | {bp_lr}")
 print(f"   Res-ANN   : best NSE {study_ann.best_value:.4f}  | {bp_ann}")
 print(f"   Attn-LSTM : best NSE {study_lstm.best_value:.4f}  | {bp_lstm}")
 
+# Fit-boosted search/retrain policy
+TOP_N_CANDIDATES = 3
+VAL_NSE_TOL = 0.03
+VAL_KGE_TOL = 0.05
+
+
+def _trial_metric(trial, key: str, fallback: float) -> float:
+    v = trial.user_attrs.get(key, fallback)
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        v = fallback
+    if not np.isfinite(v):
+        return fallback
+    return v
+
+
+def select_candidate_trials(study, top_n=3, val_nse_tol=0.03, val_kge_tol=0.05):
+    completed = [
+        t for t in study.trials
+        if t.state == optuna.trial.TrialState.COMPLETE
+        and t.value is not None
+        and np.isfinite(t.value)
+    ]
+    if not completed:
+        return [{
+            "trial_number": None,
+            "params": study.best_params,
+            "train_nse": float("-inf"),
+            "val_nse": float(study.best_value),
+            "val_kge": float("-inf"),
+        }]
+
+    best_val_nse = max(_trial_metric(t, "val_nse", float(t.value)) for t in completed)
+    best_val_kge = max(_trial_metric(t, "val_kge", float("-inf")) for t in completed)
+    floor_nse = best_val_nse - val_nse_tol
+    floor_kge = best_val_kge - val_kge_tol if np.isfinite(best_val_kge) else float("-inf")
+
+    filtered = []
+    for t in completed:
+        val_nse = _trial_metric(t, "val_nse", float(t.value))
+        val_kge = _trial_metric(t, "val_kge", float("-inf"))
+        train_nse = _trial_metric(t, "train_nse", float("-inf"))
+        if val_nse >= floor_nse and val_kge >= floor_kge:
+            filtered.append({
+                "trial_number": t.number,
+                "params": t.params,
+                "train_nse": train_nse,
+                "val_nse": val_nse,
+                "val_kge": val_kge,
+            })
+
+    if not filtered:
+        ranked = sorted(completed, key=lambda t: float(t.value), reverse=True)[:top_n]
+        return [{
+            "trial_number": t.number,
+            "params": t.params,
+            "train_nse": _trial_metric(t, "train_nse", float("-inf")),
+            "val_nse": _trial_metric(t, "val_nse", float(t.value)),
+            "val_kge": _trial_metric(t, "val_kge", float("-inf")),
+        } for t in ranked]
+
+    filtered.sort(key=lambda r: (r["train_nse"], r["val_nse"]), reverse=True)
+    return filtered[:top_n]
+
+
+lr_candidates = select_candidate_trials(
+    study_lr, top_n=TOP_N_CANDIDATES, val_nse_tol=VAL_NSE_TOL, val_kge_tol=VAL_KGE_TOL
+)
+ann_candidates = select_candidate_trials(
+    study_ann, top_n=TOP_N_CANDIDATES, val_nse_tol=VAL_NSE_TOL, val_kge_tol=VAL_KGE_TOL
+)
+lstm_candidates = select_candidate_trials(
+    study_lstm, top_n=TOP_N_CANDIDATES, val_nse_tol=VAL_NSE_TOL, val_kge_tol=VAL_KGE_TOL
+)
+
+bp_lr = lr_candidates[0]["params"]
+bp_ann = ann_candidates[0]["params"]
+bp_lstm = lstm_candidates[0]["params"]
+best_params = {
+    "log_ridge": bp_lr,
+    "res_ann": bp_ann,
+    "attn_lstm": bp_lstm,
+}
+
 # %%
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 3 │ Data Loading and Storm-Aware Split
@@ -410,15 +495,47 @@ def eval_metrics(name: str, y_true_np: np.ndarray, y_pred_np: np.ndarray) -> dic
 # BLOCK 8 │ Final Training — Log-Ridge
 # ─────────────────────────────────────────────────────────────────────────────
 print("\n🏋️  [1/3] Training Log-Ridge …")
- 
-lr_final = Ridge(alpha=bp_lr['alpha']).fit(
-    train_val_df[FEATURES],
-    np.log(train_val_df[TARGET] + bp_lr['log_shift'])
-)
-lr_preds = np.exp(lr_final.predict(test_df[FEATURES])) - bp_lr['log_shift']
- 
+
+best_lr_fit = None
+for cand in lr_candidates:
+    p = cand["params"]
+    alpha = float(p.get("alpha", 1e-3))
+    log_shift = float(p.get("log_shift", 1e-3))
+    target_transform = p.get("target_transform", "log")
+
+    if target_transform == "plain":
+        model = Ridge(alpha=alpha).fit(train_val_df[FEATURES], train_val_df[TARGET].values)
+        tr_preds = model.predict(train_val_df[FEATURES])
+        te_preds = model.predict(test_df[FEATURES])
+    else:
+        model = Ridge(alpha=alpha).fit(
+            train_val_df[FEATURES],
+            np.log(train_val_df[TARGET] + log_shift)
+        )
+        tr_preds = np.exp(model.predict(train_val_df[FEATURES])) - log_shift
+        te_preds = np.exp(model.predict(test_df[FEATURES])) - log_shift
+
+    tr_metrics = eval_metrics("Log-Ridge", train_val_df[TARGET].values.astype('float32'), tr_preds.astype('float32'))
+    fit_score = tr_metrics["NSE"]
+    if (best_lr_fit is None) or (fit_score > best_lr_fit["fit_score"]):
+        best_lr_fit = {
+            "model": model,
+            "params": p,
+            "train_preds": tr_preds.astype('float32'),
+            "test_preds": te_preds.astype('float32'),
+            "train_metrics": tr_metrics,
+            "fit_score": fit_score,
+            "trial_number": cand["trial_number"],
+            "val_nse": cand["val_nse"],
+            "val_kge": cand["val_kge"],
+        }
+
+lr_final = best_lr_fit["model"]
+bp_lr = best_lr_fit["params"]
+lr_train_preds = best_lr_fit["train_preds"]
+lr_preds = best_lr_fit["test_preds"]
 joblib.dump(lr_final, CHECKPOINT_DIR / "log_ridge_final.pkl")
-print("   ✅ Log-Ridge saved.")
+print(f"   ✅ Log-Ridge saved (trial={best_lr_fit['trial_number']}, train NSE={best_lr_fit['train_metrics']['NSE']:.4f}).")
 
 # %%
 # %%─────────────────────────────────────────────────────────────────────────
@@ -431,83 +548,101 @@ torch.cuda.empty_cache()
 gc.collect()
 require_vram(gb_needed=2.0, label="Res-ANN init")
  
-EPOCHS_ANN = 60      # generous ceiling — early stopping will cut this short
-PATIENCE   = 8
-loss_fn    = nn.HuberLoss()
- 
-ann_final = wrap_model(SotaANN(
-    len(FEATURES), bp_ann['hidden_size'],
-    bp_ann['n_layers'], bp_ann['dropout']
-))
-opt_ann   = optim.AdamW(ann_final.parameters(), lr=bp_ann['lr'], weight_decay=1e-4)
-sched_ann = optim.lr_scheduler.CosineAnnealingLR(opt_ann, T_max=EPOCHS_ANN)
- 
-# ── Dynamic batch size — avoids hard-coded OOM ───────────────────────────────
-BATCH_ANN = safe_batch_size(ann_final, X_tv_gpu, starting_batch=32768, min_batch=512)
- 
+EPOCHS_ANN = 100
+PATIENCE   = 15
+
 # Hold out the last 15% of train_val storms as a stopping signal only —
 # these rows are NOT used for metric reporting (test_df handles that).
 n_tv_storms = len(np.unique(sid_tv))
 stop_storms = np.unique(sid_tv)[int(n_tv_storms * 0.85):]
 stop_mask   = np.isin(sid_tv, stop_storms)
- 
+
 X_stop_gpu = torch.tensor(X_tv[stop_mask],  device=PRIMARY)
 y_stop_raw = scaler_y.inverse_transform(y_tv[stop_mask]).flatten().astype('float32')
 y_stop_gpu = torch.tensor(y_stop_raw, device=PRIMARY)
- 
+
 X_fit_gpu  = torch.tensor(X_tv[~stop_mask], device=PRIMARY)
 y_fit_gpu  = torch.tensor(y_tv[~stop_mask], device=PRIMARY)
- 
-best_stop_nse, wait = float('-inf'), 0
-ANN_BEST_PATH = CHECKPOINT_DIR / "ann_best.pt"
- 
-ann_final.train()
-for epoch in range(EPOCHS_ANN):
-    perm = torch.randperm(len(X_fit_gpu), device=PRIMARY)
-    for i in range(0, len(X_fit_gpu), BATCH_ANN):
-        idx = perm[i : i + BATCH_ANN]
-        # ── OOM-safe train step ───────────────────────────────────────────
-        train_step(ann_final, opt_ann, scaler_amp,
-                   X_fit_gpu[idx], y_fit_gpu[idx], loss_fn)
-    sched_ann.step()
- 
-    ann_final.eval()
-    with torch.no_grad(), autocast(device_type='cuda'):
-        stop_preds = descale(ann_final(X_stop_gpu)).flatten()
-        stop_nse   = nse(y_stop_gpu, stop_preds)
- 
-    if stop_nse > best_stop_nse + 1e-4:
-        best_stop_nse = stop_nse
-        wait = 0
-        torch.save(ann_final.state_dict(), ANN_BEST_PATH)
-    else:
-        wait += 1
-        if wait >= PATIENCE:
-            print(f"   Early stop at epoch {epoch+1} (best stop-NSE {best_stop_nse:.4f})")
-            break
-    ann_final.train()
- 
-# Load the best checkpoint, not the last epoch
-ann_final.load_state_dict(torch.load(ANN_BEST_PATH))
-ann_final.eval()
- 
-with torch.no_grad():
-    ann_preds = descale(ann_final(X_te_final_gpu)).cpu().numpy().flatten()
- 
-# Save final state
+
+best_ann_fit = None
+for cand in ann_candidates:
+    p = cand["params"]
+    ann_model = wrap_model(SotaANN(
+        len(FEATURES), int(p["hidden_size"]),
+        int(p["n_layers"]), float(p["dropout"])
+    ))
+    loss_name = p.get("loss_fn", "huber")
+    loss_fn = nn.MSELoss() if loss_name == "mse" else nn.HuberLoss()
+    wd = float(p.get("weight_decay", 0.0))
+    opt_ann = optim.AdamW(ann_model.parameters(), lr=float(p["lr"]), weight_decay=wd)
+    sched_ann = optim.lr_scheduler.CosineAnnealingLR(opt_ann, T_max=EPOCHS_ANN)
+    batch_ann = safe_batch_size(ann_model, X_tv_gpu, starting_batch=32768, min_batch=512)
+
+    best_stop_nse, wait = float('-inf'), 0
+    ann_ckpt = CHECKPOINT_DIR / f"ann_best_trial_{cand['trial_number'] if cand['trial_number'] is not None else 'fallback'}.pt"
+
+    ann_model.train()
+    for epoch in range(EPOCHS_ANN):
+        perm = torch.randperm(len(X_fit_gpu), device=PRIMARY)
+        for i in range(0, len(X_fit_gpu), batch_ann):
+            idx = perm[i : i + batch_ann]
+            train_step(ann_model, opt_ann, scaler_amp, X_fit_gpu[idx], y_fit_gpu[idx], loss_fn)
+        sched_ann.step()
+
+        ann_model.eval()
+        with torch.no_grad(), autocast(device_type='cuda'):
+            stop_preds = descale(ann_model(X_stop_gpu)).flatten()
+            stop_nse = nse(y_stop_gpu, stop_preds)
+
+        if stop_nse > best_stop_nse + 1e-4:
+            best_stop_nse = stop_nse
+            wait = 0
+            torch.save(ann_model.state_dict(), ann_ckpt)
+        else:
+            wait += 1
+            if wait >= PATIENCE:
+                break
+        ann_model.train()
+
+    ann_model.load_state_dict(torch.load(ann_ckpt))
+    ann_model.eval()
+    with torch.no_grad():
+        ann_preds_test = descale(ann_model(X_te_final_gpu)).cpu().numpy().flatten().astype('float32')
+        ann_preds_train = descale(ann_model(X_tv_gpu)).cpu().numpy().flatten().astype('float32')
+    tr_metrics = eval_metrics("Res-ANN", train_val_df[TARGET].values.astype('float32'), ann_preds_train)
+    fit_score = tr_metrics["NSE"]
+    if (best_ann_fit is None) or (fit_score > best_ann_fit["fit_score"]):
+        best_ann_fit = {
+            "state_dict": ann_model.state_dict(),
+            "params": p,
+            "train_preds": ann_preds_train,
+            "test_preds": ann_preds_test,
+            "train_metrics": tr_metrics,
+            "fit_score": fit_score,
+            "trial_number": cand["trial_number"],
+            "val_nse": cand["val_nse"],
+            "val_kge": cand["val_kge"],
+        }
+
+    del ann_model, opt_ann
+    torch.cuda.empty_cache()
+    gc.collect()
+
+bp_ann = best_ann_fit["params"]
+ann_preds = best_ann_fit["test_preds"]
+ann_train_preds = best_ann_fit["train_preds"]
 torch.save({
-    'model_state': ann_final.state_dict(),
-    'best_params': best_params["res_ann"],
-    'val_nse':     study_ann.best_value,
+    'model_state': best_ann_fit["state_dict"],
+    'best_params': bp_ann,
+    'val_nse':     best_ann_fit["val_nse"],
 }, CHECKPOINT_DIR / "ann_final.pt")
 
 # %%
 # ── Free ANN tensors before LSTM ─────────────────────────────────────────────
 del X_stop_gpu, y_stop_gpu, X_fit_gpu, y_fit_gpu
-del ann_final          # release GPU weights — LSTM needs the headroom
 torch.cuda.empty_cache()
 gc.collect()
-print("   ✅ Res-ANN saved.")
+print(f"   ✅ Res-ANN saved (trial={best_ann_fit['trial_number']}, train NSE={best_ann_fit['train_metrics']['NSE']:.4f}).")
 
 # %%
 # %%─────────────────────────────────────────────────────────────────────────
@@ -519,116 +654,170 @@ print("\n🏋️  [3/3] Training Attention-LSTM …")
 require_vram(gb_needed=2.0, label="Attn-LSTM init")
  
 WINDOW_FINAL = bp_lstm['window_size']
-EPOCHS_LSTM  = 60
-PATIENCE_L   = 8
- 
+EPOCHS_LSTM  = 100
+PATIENCE_L   = 15
+
 y_tv_sc = scaler_y.transform(train_val_df[[TARGET]]).astype('float32')
 y_te_sc = scaler_y.transform(test_df[[TARGET]]).astype('float32')
- 
-Xtv_w, ytv_w = build_storm_windows(X_tv, y_tv_sc, sid_tv, WINDOW_FINAL)
-Xte_w, yte_w = build_storm_windows(X_te_final, y_te_sc, sid_te, WINDOW_FINAL)
- 
-# CPU tensors — stream to GPU batch by batch
-Xtv_w_cpu = torch.tensor(Xtv_w, dtype=torch.float32)
-ytv_w_cpu = torch.tensor(ytv_w, dtype=torch.float32)
-Xte_w_cpu = torch.tensor(Xte_w, dtype=torch.float32)
- 
-# Stopping split (last 15% of windowed train+val rows)
-n_stop_l = int(len(Xtv_w_cpu) * 0.15)
-X_fit_l  = Xtv_w_cpu[:-n_stop_l]
-y_fit_l  = ytv_w_cpu[:-n_stop_l]
-X_stop_l = Xtv_w_cpu[-n_stop_l:]
-y_stop_l = ytv_w_cpu[-n_stop_l:]
- 
-lstm_final = wrap_model(SotaAttentionLSTM(
-    len(FEATURES), bp_lstm['hidden_size'],
-    bp_lstm['n_layers'], bp_lstm['dropout']
-))
-opt_lstm   = optim.AdamW(lstm_final.parameters(), lr=bp_lstm['lr'], weight_decay=1e-4)
-sched_lstm = optim.lr_scheduler.CosineAnnealingLR(opt_lstm, T_max=EPOCHS_LSTM)
- 
-# ── Dynamic batch size ────────────────────────────────────────────────────────
-# Use a CPU sample streamed to GPU for the probe (avoids pre-loading all windows)
-_probe_gpu = X_fit_l[:1].to(PRIMARY)
-BATCH_LSTM = safe_batch_size(lstm_final, _probe_gpu.expand(2048, -1, -1),
-                             starting_batch=2048, min_batch=64)
-del _probe_gpu
-torch.cuda.empty_cache()
- 
-best_stop_nse_l, wait_l = float('-inf'), 0
-LSTM_BEST_PATH = CHECKPOINT_DIR / "lstm_best.pt"
- 
-lstm_final.train()
-for epoch in range(EPOCHS_LSTM):
-    perm = torch.randperm(len(X_fit_l))
-    for i in range(0, len(X_fit_l), BATCH_LSTM):
-        idx = perm[i : i + BATCH_LSTM]
-        bx  = X_fit_l[idx].to(PRIMARY, non_blocking=True)
-        by  = y_fit_l[idx].to(PRIMARY, non_blocking=True)
-        # ── OOM-safe train step with gradient clipping ────────────────────
-        train_step(lstm_final, opt_lstm, scaler_amp, bx, by, loss_fn, clip_grad=1.0)
-    sched_lstm.step()
- 
-    # Stopping evaluation
-    lstm_final.eval()
+
+best_lstm_fit = None
+for cand in lstm_candidates:
+    p = cand["params"]
+    window = int(p["window_size"])
+    Xtv_w, ytv_w = build_storm_windows(X_tv, y_tv_sc, sid_tv, window)
+    Xte_w, yte_w = build_storm_windows(X_te_final, y_te_sc, sid_te, window)
+    if len(Xtv_w) == 0 or len(Xte_w) == 0:
+        continue
+
+    Xtv_w_cpu = torch.tensor(Xtv_w, dtype=torch.float32)
+    ytv_w_cpu = torch.tensor(ytv_w, dtype=torch.float32)
+    Xte_w_cpu = torch.tensor(Xte_w, dtype=torch.float32)
+
+    n_stop_l = max(1, int(len(Xtv_w_cpu) * 0.15))
+    X_fit_l  = Xtv_w_cpu[:-n_stop_l]
+    y_fit_l  = ytv_w_cpu[:-n_stop_l]
+    X_stop_l = Xtv_w_cpu[-n_stop_l:]
+    y_stop_l = ytv_w_cpu[-n_stop_l:]
+
+    lstm_model = wrap_model(SotaAttentionLSTM(
+        len(FEATURES), int(p["hidden_size"]),
+        int(p["n_layers"]), float(p["dropout"])
+    ))
+    loss_name = p.get("loss_fn", "huber")
+    loss_fn = nn.MSELoss() if loss_name == "mse" else nn.HuberLoss()
+    wd = float(p.get("weight_decay", 0.0))
+    opt_lstm = optim.AdamW(lstm_model.parameters(), lr=float(p["lr"]), weight_decay=wd)
+    sched_lstm = optim.lr_scheduler.CosineAnnealingLR(opt_lstm, T_max=EPOCHS_LSTM)
+
+    _probe_gpu = X_fit_l[:1].to(PRIMARY)
+    batch_lstm = safe_batch_size(lstm_model, _probe_gpu.expand(2048, -1, -1), starting_batch=2048, min_batch=64)
+    del _probe_gpu
+    torch.cuda.empty_cache()
+
+    best_stop_nse_l, wait_l = float('-inf'), 0
+    lstm_ckpt = CHECKPOINT_DIR / f"lstm_best_trial_{cand['trial_number'] if cand['trial_number'] is not None else 'fallback'}.pt"
+
+    lstm_model.train()
+    for epoch in range(EPOCHS_LSTM):
+        perm = torch.randperm(len(X_fit_l))
+        for i in range(0, len(X_fit_l), batch_lstm):
+            idx = perm[i : i + batch_lstm]
+            bx  = X_fit_l[idx].to(PRIMARY, non_blocking=True)
+            by  = y_fit_l[idx].to(PRIMARY, non_blocking=True)
+            train_step(lstm_model, opt_lstm, scaler_amp, bx, by, loss_fn, clip_grad=1.0)
+        sched_lstm.step()
+
+        lstm_model.eval()
+        with torch.no_grad():
+            all_p = []
+            for j in range(0, len(X_stop_l), batch_lstm):
+                all_p.append(lstm_model(X_stop_l[j : j + batch_lstm].to(PRIMARY)))
+            preds_s = torch.cat(all_p)
+            y_stop_d = descale(y_stop_l.to(PRIMARY)).flatten()
+            p_stop_d = descale(preds_s).flatten()
+            stop_nse_l = nse(y_stop_d, p_stop_d)
+
+        if stop_nse_l > best_stop_nse_l + 1e-4:
+            best_stop_nse_l = stop_nse_l
+            wait_l = 0
+            torch.save(lstm_model.state_dict(), lstm_ckpt)
+        else:
+            wait_l += 1
+            if wait_l >= PATIENCE_L:
+                break
+        lstm_model.train()
+
+    lstm_model.load_state_dict(torch.load(lstm_ckpt))
+    lstm_model.eval()
     with torch.no_grad():
-        all_p = []
-        for j in range(0, len(X_stop_l), BATCH_LSTM):
-            all_p.append(lstm_final(X_stop_l[j : j + BATCH_LSTM].to(PRIMARY)))
-        preds_s    = torch.cat(all_p)
-        y_stop_d   = descale(y_stop_l.to(PRIMARY)).flatten()
-        p_stop_d   = descale(preds_s).flatten()
-        stop_nse_l = nse(y_stop_d, p_stop_d)
- 
-    if stop_nse_l > best_stop_nse_l + 1e-4:
-        best_stop_nse_l = stop_nse_l
-        wait_l = 0
-        torch.save(lstm_final.state_dict(), LSTM_BEST_PATH)
-    else:
-        wait_l += 1
-        if wait_l >= PATIENCE_L:
-            print(f"   Early stop at epoch {epoch+1} (best stop-NSE {best_stop_nse_l:.4f})")
-            break
-    lstm_final.train()
- 
-# Load the best checkpoint
-lstm_final.load_state_dict(torch.load(LSTM_BEST_PATH))
-lstm_final.eval()
- 
-with torch.no_grad():
-    lstm_preds_s = torch.cat(
-        [lstm_final(Xte_w_cpu[i : i + BATCH_LSTM].to(PRIMARY))
-         for i in range(0, len(Xte_w_cpu), BATCH_LSTM)]
-    )
-    lstm_preds = descale(lstm_preds_s).cpu().numpy().flatten()
- 
-lstm_obs = descale(torch.tensor(yte_w, device=PRIMARY)).cpu().numpy().flatten()
- 
-# Save final state
+        lstm_preds_s = torch.cat(
+            [lstm_model(Xte_w_cpu[i : i + batch_lstm].to(PRIMARY))
+             for i in range(0, len(Xte_w_cpu), batch_lstm)]
+        )
+        lstm_preds_test = descale(lstm_preds_s).cpu().numpy().flatten().astype('float32')
+        lstm_obs_test = descale(torch.tensor(yte_w, device=PRIMARY)).cpu().numpy().flatten().astype('float32')
+
+        lstm_train_preds_s = torch.cat(
+            [lstm_model(Xtv_w_cpu[i : i + batch_lstm].to(PRIMARY))
+             for i in range(0, len(Xtv_w_cpu), batch_lstm)]
+        )
+        lstm_preds_train = descale(lstm_train_preds_s).cpu().numpy().flatten().astype('float32')
+        lstm_obs_train = descale(torch.tensor(ytv_w, device=PRIMARY)).cpu().numpy().flatten().astype('float32')
+
+    tr_metrics = eval_metrics("Attn-LSTM", lstm_obs_train, lstm_preds_train)
+    fit_score = tr_metrics["NSE"]
+    if (best_lstm_fit is None) or (fit_score > best_lstm_fit["fit_score"]):
+        best_lstm_fit = {
+            "state_dict": lstm_model.state_dict(),
+            "params": p,
+            "window": window,
+            "train_preds": lstm_preds_train,
+            "train_obs": lstm_obs_train,
+            "test_preds": lstm_preds_test,
+            "test_obs": lstm_obs_test,
+            "train_metrics": tr_metrics,
+            "fit_score": fit_score,
+            "trial_number": cand["trial_number"],
+            "val_nse": cand["val_nse"],
+            "val_kge": cand["val_kge"],
+        }
+
+    del Xtv_w_cpu, ytv_w_cpu, Xte_w_cpu, X_fit_l, y_fit_l, X_stop_l, y_stop_l
+    del lstm_model, opt_lstm
+    gc.collect()
+    torch.cuda.empty_cache()
+
+if best_lstm_fit is None:
+    raise RuntimeError("No valid LSTM candidate produced windowed train/test data.")
+
+bp_lstm = best_lstm_fit["params"]
+WINDOW_FINAL = best_lstm_fit["window"]
+lstm_preds = best_lstm_fit["test_preds"]
+lstm_obs = best_lstm_fit["test_obs"]
+lstm_train_preds = best_lstm_fit["train_preds"]
+lstm_train_obs = best_lstm_fit["train_obs"]
 torch.save({
-    'model_state': lstm_final.state_dict(),
-    'best_params': best_params["attn_lstm"],
-    'val_nse':     study_lstm.best_value,
+    'model_state': best_lstm_fit["state_dict"],
+    'best_params': bp_lstm,
+    'val_nse':     best_lstm_fit["val_nse"],
     'window_size': WINDOW_FINAL,
 }, CHECKPOINT_DIR / "lstm_final.pt")
- 
-del X_fit_l, y_fit_l, X_stop_l, y_stop_l
+
 gc.collect()
 torch.cuda.empty_cache()
-print("   ✅ Attn-LSTM saved.")
+print(f"   ✅ Attn-LSTM saved (trial={best_lstm_fit['trial_number']}, train NSE={best_lstm_fit['train_metrics']['NSE']:.4f}).")
 print(f"\n✅ All models trained and checkpointed to {CHECKPOINT_DIR}")
 
 # %%
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 11 │ Test-Set Metrics  (first and only evaluation on test data)
 # ─────────────────────────────────────────────────────────────────────────────
+train_metrics = [
+    eval_metrics("Log-Ridge", train_val_df[TARGET].values.astype('float32'), lr_train_preds),
+    eval_metrics("Res-ANN",   train_val_df[TARGET].values.astype('float32'), ann_train_preds),
+    eval_metrics("Attn-LSTM", lstm_train_obs, lstm_train_preds),
+]
+train_metrics_df = pd.DataFrame(train_metrics).set_index('Model')
+
 metrics = [
     eval_metrics("Log-Ridge", y_te_raw,  lr_preds),
     eval_metrics("Res-ANN",   y_te_raw,  ann_preds),
     eval_metrics("Attn-LSTM", lstm_obs,  lstm_preds),
 ]
 metrics_df = pd.DataFrame(metrics).set_index('Model')
- 
+
+gap_df = (train_metrics_df[["NSE", "KGE"]] - metrics_df[["NSE", "KGE"]]).rename(
+    columns={"NSE": "Delta_NSE_train_minus_test", "KGE": "Delta_KGE_train_minus_test"}
+)
+
+print("\n📊 ── Final Train-Set Metrics ─────────────────────────")
+print(f"{'':20} {'NSE':>8} {'KGE':>8} {'RMSE(in)':>10} {'PBIAS%':>8}")
+print(f"{'─'*56}")
+for name, row in train_metrics_df.iterrows():
+    print(f"{name:20} {row['NSE']:>8.4f} {row['KGE']:>8.4f} "
+          f"{row['RMSE']:>10.4f} {row['PBIAS']:>8.2f}")
+print(f"{'─'*56}")
+
 print("\n📊 ── Final Test-Set Metrics ──────────────────────────")
 print(f"{'':20} {'NSE':>8} {'KGE':>8} {'RMSE(in)':>10} {'PBIAS%':>8}")
 print(f"{'─'*56}")
@@ -638,12 +827,44 @@ for name, row in metrics_df.iterrows():
 print(f"{'─'*56}")
 print("  NSE/KGE: 1=perfect | PBIAS: 0%=no bias, +=under, -=over")
 
+print("\n📉 ── Overfit Gap (Train - Test) ─────────────────────")
+for name, row in gap_df.iterrows():
+    print(f"{name:20} ΔNSE={row['Delta_NSE_train_minus_test']:+.4f}  ΔKGE={row['Delta_KGE_train_minus_test']:+.4f}")
+
 # %%
 # ── Persist metrics and run metadata to disk ──────────────────────────────────
 run_log = {
     "timestamp":    datetime.now().isoformat(),
-    "best_params":  best_params,         # FIX: was undefined in original
+    "best_params":  {
+        "log_ridge": bp_lr,
+        "res_ann": bp_ann,
+        "attn_lstm": bp_lstm,
+    },
+    "train_metrics": train_metrics_df.to_dict(),
     "test_metrics": metrics_df.to_dict(),
+    "overfit_gaps": gap_df.to_dict(),
+    "guardrails": {
+        "top_n_candidates": TOP_N_CANDIDATES,
+        "val_nse_tolerance": VAL_NSE_TOL,
+        "val_kge_tolerance": VAL_KGE_TOL,
+        "selected_trials": {
+            "log_ridge": {
+                "trial_number": best_lr_fit["trial_number"],
+                "val_nse": best_lr_fit["val_nse"],
+                "val_kge": best_lr_fit["val_kge"],
+            },
+            "res_ann": {
+                "trial_number": best_ann_fit["trial_number"],
+                "val_nse": best_ann_fit["val_nse"],
+                "val_kge": best_ann_fit["val_kge"],
+            },
+            "attn_lstm": {
+                "trial_number": best_lstm_fit["trial_number"],
+                "val_nse": best_lstm_fit["val_nse"],
+                "val_kge": best_lstm_fit["val_kge"],
+            },
+        },
+    },
     "data": {
         "train_rows":   int(len(train_df)),
         "val_rows":     int(len(val_df)),

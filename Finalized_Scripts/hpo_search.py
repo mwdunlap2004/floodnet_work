@@ -324,6 +324,8 @@ def kge(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     Preferred over NSE for flood peak assessment.
     """
     r     = np.corrcoef(y_true, y_pred)[0, 1]
+    if np.isnan(r):
+        r = 0.0
     alpha = y_pred.std()  / (y_true.std()  + 1e-9)
     beta  = y_pred.mean() / (y_true.mean() + 1e-9)
     return 1 - np.sqrt((r - 1)**2 + (alpha - 1)**2 + (beta - 1)**2)
@@ -366,16 +368,28 @@ def eval_metrics(name: str, y_true_np: np.ndarray,
 # negative depth predictions.
  
 def objective_log_reg(trial):
-    alpha     = trial.suggest_float("alpha",     1e-3, 20.0, log=True)
+    alpha     = trial.suggest_float("alpha",     1e-6, 20.0, log=True)
     log_shift = trial.suggest_float("log_shift", 1e-4,  1.0, log=True)
- 
-    y_tr_log = np.log(train_df[TARGET] + log_shift)
-    model    = Ridge(alpha=alpha).fit(train_df[FEATURES], y_tr_log)
- 
-    preds_val = np.exp(model.predict(val_df[FEATURES])) - log_shift
+    target_transform = trial.suggest_categorical("target_transform", ["log", "plain"])
+
+    if target_transform == "log":
+        y_tr_log = np.log(train_df[TARGET] + log_shift)
+        model = Ridge(alpha=alpha).fit(train_df[FEATURES], y_tr_log)
+        preds_val = np.exp(model.predict(val_df[FEATURES])) - log_shift
+        preds_tr = np.exp(model.predict(train_df[FEATURES])) - log_shift
+    else:
+        model = Ridge(alpha=alpha).fit(train_df[FEATURES], train_df[TARGET].values)
+        preds_val = model.predict(val_df[FEATURES])
+        preds_tr = model.predict(train_df[FEATURES])
+
     y_val_np  = val_df[TARGET].values
+    y_tr_np   = train_df[TARGET].values
     denom     = np.sum((y_val_np - y_val_np.mean()) ** 2) + 1e-9
-    return float(1 - np.sum((y_val_np - preds_val) ** 2) / denom)
+    val_nse = float(1 - np.sum((y_val_np - preds_val) ** 2) / denom)
+    trial.set_user_attr("train_nse", float(1 - np.sum((y_tr_np - preds_tr) ** 2) / (np.sum((y_tr_np - y_tr_np.mean()) ** 2) + 1e-9)))
+    trial.set_user_attr("val_nse", val_nse)
+    trial.set_user_attr("val_kge", float(kge(y_val_np, preds_val)))
+    return val_nse
  
 
 # %%
@@ -384,22 +398,24 @@ def objective_log_reg(trial):
 # events, which would otherwise dominate the gradient signal.
 
 def objective_ann(trial):
-    h_size   = trial.suggest_int("hidden_size",  128,  512, step=64)
-    n_layers = trial.suggest_int("n_layers",       2,    4)
-    lr       = trial.suggest_float("lr",         1e-4, 5e-3, log=True)
-    dropout  = trial.suggest_float("dropout",     0.0,  0.3)
+    h_size   = trial.suggest_int("hidden_size",  128, 1024, step=128)
+    n_layers = trial.suggest_int("n_layers",       2,    6)
+    lr       = trial.suggest_float("lr",       5e-5, 5e-3, log=True)
+    dropout  = trial.suggest_float("dropout",     0.0, 0.15)
+    weight_decay = trial.suggest_float("weight_decay", 1e-8, 1e-4, log=True)
+    loss_name = trial.suggest_categorical("loss_fn", ["huber", "mse"])
     
     # CRITICAL FIX: Lowered from 262,144 to 32,768 for 11GB VRAM safety
     batch_sz = 32768   
  
     model   = wrap_model(SotaANN(len(FEATURES), h_size, n_layers, dropout))
-    opt     = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    sched   = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=25)
-    loss_fn = nn.HuberLoss()
+    opt     = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    sched   = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=40)
+    loss_fn = nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()
  
-    best_val, patience, wait = float('inf'), 5, 0
+    best_val, patience, wait = float('inf'), 8, 0
  
-    for _ in range(25):
+    for _ in range(40):
         model.train()
         perm = torch.randperm(len(X_tr_gpu), device=PRIMARY)
         for i in range(0, len(X_tr_gpu), batch_sz):
@@ -415,6 +431,10 @@ def objective_ann(trial):
         model.eval()
         with torch.no_grad(), autocast(device_type='cuda'):
             val_nse = nse(y_val_raw_gpu, descale(model(X_val_gpu)).flatten())
+            tr_nse  = nse(torch.tensor(train_df[TARGET].values.astype('float32'), device=PRIMARY),
+                          descale(model(X_tr_gpu)).flatten())
+            val_np_preds = descale(model(X_val_gpu)).detach().cpu().numpy().flatten()
+            val_kge = kge(y_val_raw, val_np_preds)
  
         val_loss = -val_nse
         if val_loss < best_val - 1e-4:
@@ -427,7 +447,9 @@ def objective_ann(trial):
     # Free memory before the next trial
     del model, opt
     torch.cuda.empty_cache()
- 
+    trial.set_user_attr("train_nse", float(tr_nse))
+    trial.set_user_attr("val_nse", float(-best_val))
+    trial.set_user_attr("val_kge", float(val_kge))
     return -best_val
 
 # %%
@@ -441,11 +463,13 @@ def objective_lstm(trial):
     def _descale(p: torch.Tensor) -> torch.Tensor:
         return p * _Y_STD + _Y_MEAN
 
-    window   = trial.suggest_int("window_size",  30,  90, step=30)
-    h_size   = trial.suggest_int("hidden_size",  32, 128, step=32)
-    n_layers = trial.suggest_int("n_layers",      1,   2)
-    lr       = trial.suggest_float("lr",        1e-4, 1e-3, log=True)
-    dropout  = trial.suggest_float("dropout",    0.0,  0.2)
+    window   = trial.suggest_int("window_size",  30, 120, step=30)
+    h_size   = trial.suggest_int("hidden_size",  64, 256, step=32)
+    n_layers = trial.suggest_int("n_layers",      1,   3)
+    lr       = trial.suggest_float("lr",      5e-5, 2e-3, log=True)
+    dropout  = trial.suggest_float("dropout",    0.0, 0.15)
+    weight_decay = trial.suggest_float("weight_decay", 1e-8, 1e-4, log=True)
+    loss_name = trial.suggest_categorical("loss_fn", ["huber", "mse"])
     batch_sz = 1024
 
     Xtw_cpu, ytw_cpu = get_windows('train', window)
@@ -455,11 +479,14 @@ def objective_lstm(trial):
         return float('-inf')
 
     model   = wrap_model(SotaAttentionLSTM(len(FEATURES), h_size, n_layers, dropout))
-    opt     = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    loss_fn = nn.HuberLoss()
+    opt     = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    loss_fn = nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()
 
     try:
-        for epoch in range(15):
+        best_val_nse = float("-inf")
+        best_train_nse = float("-inf")
+        best_val_kge = float("-inf")
+        for epoch in range(25):
             model.train()
             perm = torch.randperm(len(Xtw_cpu))
             for i in range(0, len(Xtw_cpu), batch_sz):
@@ -486,10 +513,33 @@ def objective_lstm(trial):
                     _descale(yvw_cpu.to(PRIMARY)).flatten(),
                     _descale(preds_s).flatten()
                 )
+                val_pred_np = _descale(preds_s).cpu().numpy().flatten()
+                val_true_np = _descale(yvw_cpu.to(PRIMARY)).cpu().numpy().flatten()
+                val_kge = kge(val_true_np, val_pred_np)
 
-        return val_nse
+                all_p_tr = []
+                for j in range(0, len(Xtw_cpu), batch_sz):
+                    bxt = Xtw_cpu[j : j + batch_sz].to(PRIMARY)
+                    all_p_tr.append(model(bxt))
+                tr_preds = torch.cat(all_p_tr)
+                tr_nse = nse(
+                    _descale(ytw_cpu.to(PRIMARY)).flatten(),
+                    _descale(tr_preds).flatten()
+                )
+                if val_nse > best_val_nse:
+                    best_val_nse = val_nse
+                    best_train_nse = tr_nse
+                    best_val_kge = val_kge
+
+        trial.set_user_attr("train_nse", float(best_train_nse))
+        trial.set_user_attr("val_nse", float(best_val_nse))
+        trial.set_user_attr("val_kge", float(best_val_kge))
+        return best_val_nse
 
     except torch.OutOfMemoryError:
+        trial.set_user_attr("train_nse", -1.0)
+        trial.set_user_attr("val_nse", -1.0)
+        trial.set_user_attr("val_kge", -1.0)
         return -1.0
     finally:
         del model, opt
@@ -499,9 +549,9 @@ def objective_lstm(trial):
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 8 │ Hyperparameter Search
 # ─────────────────────────────────────────────────────────────────────────────
-N_TRIALS_LR   = 40
-N_TRIALS_ANN  = 35
-N_TRIALS_LSTM = 15
+N_TRIALS_LR   = 60
+N_TRIALS_ANN  = 60
+N_TRIALS_LSTM = 40
  
 # ── Define the database path FIRST ──────────────────────────────────────────
 DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/floodnet_hpo.db"
