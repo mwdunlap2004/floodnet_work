@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-04-11T22:51:48.862366",
+  "timestamp": "2026-04-21T07:38:46.801336",
   "best_params": {
     "log_ridge": {
-      "alpha": 0.043423115913266766,
-      "log_shift": 0.991299438859841
+      "alpha": 2.278456787920009,
+      "log_shift": 0.9019528694698856
     },
     "res_ann": {
       "hidden_size": 320,
@@ -21,32 +21,32 @@
   },
   "test_metrics": {
     "NSE": {
-      "Log-Ridge": -0.0202,
-      "Res-ANN": 0.123,
-      "Attn-LSTM": 0.1368
+      "Log-Ridge": -0.0003,
+      "Res-ANN": 0.0385,
+      "Attn-LSTM": 0.0709
     },
     "KGE": {
-      "Log-Ridge": -0.5261,
-      "Res-ANN": 0.0953,
-      "Attn-LSTM": 0.1215
+      "Log-Ridge": -0.4794,
+      "Res-ANN": -0.1795,
+      "Attn-LSTM": -0.3891
     },
     "RMSE": {
-      "Log-Ridge": 1.7145,
-      "Res-ANN": 1.5896,
-      "Attn-LSTM": 1.5746
+      "Log-Ridge": 1.2531,
+      "Res-ANN": 1.2285,
+      "Attn-LSTM": 1.2362
     },
     "PBIAS": {
-      "Log-Ridge": 84.59,
-      "Res-ANN": 48.05,
-      "Attn-LSTM": 48.2
+      "Log-Ridge": 80.59,
+      "Res-ANN": 11.54,
+      "Attn-LSTM": 92.26
     }
   },
   "data": {
-    "train_rows": 5128938,
-    "val_rows": 407823,
-    "test_rows": 120584,
-    "train_storms": 210,
-    "val_storms": 45,
-    "test_storms": 46
+    "train_rows": 470399,
+    "val_rows": 37814,
+    "test_rows": 36268,
+    "train_storms": 144,
+    "val_storms": 30,
+    "test_storms": 32
   }
 }
