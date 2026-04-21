@@ -554,7 +554,10 @@ N_TRIALS_ANN  = 60
 N_TRIALS_LSTM = 40
  
 # ── Define the database path FIRST ──────────────────────────────────────────
-DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/floodnet_hpo.db"
+# ── Define a NEW database path for this dataset variant ──────────────────────
+HPO_DB_NAME = "floodnet_hpo_newfilter.db"
+DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/{HPO_DB_NAME}"
+print(f"Using Optuna DB: {DB}")
 
 print("🔎 [1/3] Log-Ridge baseline …")
 study_lr = optuna.create_study(

@@ -7,7 +7,6 @@
 # retrains all three models on Train+Val, evaluates on held-out Test, and
 # saves checkpoints, scalers, metrics, and figures to disk.
 # ─────────────────────────────────────────────────────────────────────────────
- 
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 1 │ Imports & Hardware Setup
 # ─────────────────────────────────────────────────────────────────────────────
@@ -165,13 +164,16 @@ FEATURES = [
 TARGET   = 'depth_inches'
 TV_SPLIT = (0.70, 0.15, 0.15)
  
-DB      = f"sqlite:///{PROJECT_ROOT}/Data_Files/floodnet_hpo.db"
-db_path = PROJECT_ROOT / "Data_Files" / "floodnet_hpo.db"
+HPO_DB_NAME = "floodnet_hpo_newfilter.db"
+DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/{HPO_DB_NAME}"
+db_path = PROJECT_ROOT / "Data_Files" / HPO_DB_NAME
+
 if not db_path.exists():
     raise FileNotFoundError(
         f"Optuna database not found at {db_path}. "
-        "Run 01_hpo_search.py first."
+        "Run hpo_search.py first."
     )
+
  
 study_lr   = optuna.load_study(study_name="log_ridge", storage=DB)
 study_ann  = optuna.load_study(study_name="res_ann",   storage=DB)
