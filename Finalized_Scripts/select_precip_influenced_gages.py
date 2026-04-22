@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
@@ -27,6 +28,11 @@ def resolve_path(project_root: Path, raw: str) -> Path:
     if p.is_absolute():
         return p
     return project_root / p
+
+
+def qid(name: str) -> str:
+    """Quote an SQL identifier safely for DuckDB."""
+    return '"' + name.replace('"', '""') + '"'
 
 
 def calculate_richards_baker_index(flow_series: pd.Series) -> float:
@@ -116,7 +122,6 @@ def compute_lag_and_cross_correlation(
         if len(joined) < min_overlap_points:
             vals.append(np.nan)
             continue
-        # Skip undefined Pearson cases (zero variance in either vector).
         if np.isclose(joined.iloc[:, 0].std(), 0.0) or np.isclose(joined.iloc[:, 1].std(), 0.0):
             vals.append(np.nan)
             continue
@@ -143,11 +148,7 @@ def build_uniform_series(
     """Build regular interval precip/flow series for one site."""
     freq = f"{interval_minutes}min"
 
-    ts = (
-        site_df[[time_col, precip_col, flow_col]]
-        .dropna(subset=[time_col])
-        .copy()
-    )
+    ts = site_df[[time_col, precip_col, flow_col]].dropna(subset=[time_col]).copy()
     ts[time_col] = pd.to_datetime(ts[time_col], errors="coerce", utc=True)
     ts = ts.dropna(subset=[time_col])
     if ts.empty:
@@ -157,13 +158,9 @@ def build_uniform_series(
     ts = ts.groupby(time_col, as_index=True)[[precip_col, flow_col]].mean()
     ts = ts.resample(freq).mean()
 
-    # Precipitation gaps are treated as 0 for cross-correlation continuity.
     ts[precip_col] = pd.to_numeric(ts[precip_col], errors="coerce").fillna(0.0)
-
-    # Keep flow as observed; interpolate short gaps only.
     ts[flow_col] = pd.to_numeric(ts[flow_col], errors="coerce")
     ts[flow_col] = ts[flow_col].interpolate(limit=4)
-
     return ts
 
 
@@ -178,31 +175,12 @@ def main() -> None:
     parser.add_argument("--interval-minutes", type=int, default=15)
     parser.add_argument("--min-overlap-points", type=int, default=32)
     parser.add_argument("--report-csv", default="Data_Files/selected_precip_gages_report.csv")
-    parser.add_argument(
-        "--time-col",
-        default="time",
-        help="Timestamp column to use for lag/correlation analysis.",
-    )
-    parser.add_argument(
-        "--site-col",
-        default="deployment_id",
-        help="Site identifier column.",
-    )
-    parser.add_argument(
-        "--precip-col",
-        default="precip_1hr [inch]",
-        help="Precipitation column used for lag/correlation analysis.",
-    )
-    parser.add_argument(
-        "--flow-col",
-        default="depth_inches",
-        help="Flow proxy column used for flashiness/correlation analysis.",
-    )
-    parser.add_argument(
-        "--skip-tidal-filter",
-        action="store_true",
-        help="Disable FFT-based tidal screening.",
-    )
+    parser.add_argument("--time-col", default="time", help="Timestamp column for lag/correlation.")
+    parser.add_argument("--site-col", default="deployment_id", help="Site identifier column.")
+    parser.add_argument("--precip-col", default="precip_1hr [inch]", help="Precipitation column.")
+    parser.add_argument("--flow-col", default="depth_inches", help="Flow proxy column.")
+    parser.add_argument("--skip-tidal-filter", action="store_true", help="Disable FFT tidal screening.")
+    parser.add_argument("--duckdb-threads", type=int, default=4)
     args = parser.parse_args()
 
     if args.top_n <= 0:
@@ -216,17 +194,47 @@ def main() -> None:
     if not input_path.exists():
         raise FileNotFoundError(f"Input parquet not found: {input_path}")
 
-    print(f"Loading source data: {input_path}")
-    df = pd.read_parquet(input_path)
-    print(f"Loaded {len(df):,} rows and {len(df.columns)} columns")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
 
+    print(f"Loading source data: {input_path}")
+
+    con = duckdb.connect()
+    con.execute(f"SET threads TO {int(args.duckdb_threads)};")
+
+    in_sql = str(input_path).replace("'", "''")
+
+    schema_df = con.execute(f"SELECT * FROM read_parquet('{in_sql}') LIMIT 0").df()
+    cols = set(schema_df.columns)
     required_cols = {args.site_col, args.time_col, args.precip_col, args.flow_col}
-    missing_required = sorted(required_cols - set(df.columns))
+    missing_required = sorted(required_cols - cols)
     if missing_required:
         raise KeyError(f"Missing required columns: {missing_required}")
 
+    site_query = f"""
+        SELECT DISTINCT {qid(args.site_col)} AS site_id
+        FROM read_parquet('{in_sql}')
+        WHERE {qid(args.site_col)} IS NOT NULL
+        ORDER BY 1
+    """
+    site_ids = [row[0] for row in con.execute(site_query).fetchall()]
+    print(f"Found {len(site_ids)} candidate sites")
+
     rows = []
-    for site_id, grp in df.groupby(args.site_col, sort=False):
+    fetch_query = f"""
+        SELECT
+            {qid(args.time_col)} AS {qid(args.time_col)},
+            {qid(args.precip_col)} AS {qid(args.precip_col)},
+            {qid(args.flow_col)} AS {qid(args.flow_col)}
+        FROM read_parquet('{in_sql}')
+        WHERE {qid(args.site_col)} = ?
+    """
+
+    for idx, site_id in enumerate(site_ids, start=1):
+        if idx % 25 == 0 or idx == len(site_ids):
+            print(f"  Processing site {idx}/{len(site_ids)}")
+
+        grp = con.execute(fetch_query, [site_id]).df()
         ts = build_uniform_series(
             grp,
             time_col=args.time_col,
@@ -316,15 +324,7 @@ def main() -> None:
     selected_ids = selected["site_id"].tolist()
 
     report = results_df.merge(
-        ranked[
-            [
-                "site_id",
-                "normalized_rb",
-                "normalized_corr",
-                "normalized_inv_lag",
-                "composite_score",
-            ]
-        ],
+        ranked[["site_id", "normalized_rb", "normalized_corr", "normalized_inv_lag", "composite_score"]],
         on="site_id",
         how="left",
     )
@@ -334,20 +334,29 @@ def main() -> None:
     report["interval_minutes"] = args.interval_minutes
     report["method"] = "rb_lag_corr_weighted_v2"
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-
-    filtered_df = df[df[args.site_col].isin(selected_ids)].copy()
-    filtered_df.to_parquet(output_path, index=False)
     report.to_csv(report_path, index=False)
 
+    con.execute("CREATE OR REPLACE TEMP TABLE selected_sites(site_id VARCHAR)")
+    con.executemany("INSERT INTO selected_sites VALUES (?)", [(str(s),) for s in selected_ids])
+
+    out_sql = str(output_path).replace("'", "''")
+    copy_query = f"""
+        COPY (
+            SELECT p.*
+            FROM read_parquet('{in_sql}') p
+            INNER JOIN selected_sites s
+                ON p.{qid(args.site_col)} = s.site_id
+        ) TO '{out_sql}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
+    """
+    con.execute(copy_query)
+
     print("\nSelection complete")
-    print(f"Sites evaluated      : {len(results_df)}")
-    print(f"Usable non-tidal     : {len(ranked)}")
-    print(f"Selected top-N       : {len(selected_ids)}")
-    print(f"Selected IDs         : {selected_ids}")
-    print(f"Wrote filtered parquet: {output_path}")
-    print(f"Wrote selection report: {report_path}")
+    print(f"Sites evaluated        : {len(results_df)}")
+    print(f"Usable non-tidal       : {len(ranked)}")
+    print(f"Selected top-N         : {len(selected_ids)}")
+    print(f"Selected IDs           : {selected_ids}")
+    print(f"Wrote filtered parquet : {output_path}")
+    print(f"Wrote selection report : {report_path}")
 
 
 if __name__ == "__main__":
