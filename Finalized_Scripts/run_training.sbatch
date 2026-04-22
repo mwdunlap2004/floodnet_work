@@ -15,4 +15,4 @@ cd /home/upw4ys/Documents/floodnet_work
 source .venv/bin/activate 
 
 # Run the python script
-python Finalized_Scripts/model_training.py
+python Finalized_Scripts/model_training.py --input-file rain_influenced_gages.parquet

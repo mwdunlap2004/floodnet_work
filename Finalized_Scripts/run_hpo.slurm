@@ -15,4 +15,4 @@ cd /home/upw4ys/Documents/floodnet_work
 source .venv/bin/activate 
 
 # Run the hyperparameter optimization script
-python Finalized_Scripts/hpo_search.py
+python Finalized_Scripts/hpo_search.py --input-file rain_influenced_gages.parquet
