@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:2             
 #SBATCH --cpus-per-task=4        
 #SBATCH --mem=100G               
-#SBATCH --time=4:00:00          
+#SBATCH --time=10:00:00          
 
 # Navigate to your working directory
 cd /home/upw4ys/Documents/floodnet_work
