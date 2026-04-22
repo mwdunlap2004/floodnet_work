@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import os
 from pathlib import Path
+import argparse
  
 warnings.filterwarnings('ignore')
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -54,6 +55,16 @@ TARGET = 'depth_inches'
 TV_SPLIT = (0.70, 0.15, 0.15)  # Train / Val / Test proportions
 
 # %%
+# CLI flags (parse known args to avoid notebook-injected flags)
+parser = argparse.ArgumentParser(add_help=True)
+parser.add_argument(
+    "--input-file",
+    default="rain_influenced_gages.parquet",
+    help="Parquet filename under Data_Files/ or absolute path.",
+)
+args, _unknown = parser.parse_known_args()
+
+# %%
 # 1. Identify the current directory (Handles both .py scripts and Jupyter)
 try:
     # Use __file__ for standalone scripts
@@ -72,8 +83,8 @@ else:
 # 3. Define the absolute path to the data
 # This ensures the path is /floodnet_work/Data_Files/ instead of /Finalized_Scripts/Data_Files/
 data_dir = PROJECT_ROOT / "Data_Files"
-file_name = "delineated_storms.parquet"
-file_path = data_dir / file_name
+input_file = Path(args.input_file)
+file_path = input_file if input_file.is_absolute() else (data_dir / input_file)
 
 # 4. Safety Check and Data Loading
 if not file_path.exists():
