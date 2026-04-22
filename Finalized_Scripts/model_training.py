@@ -26,6 +26,7 @@ import matplotlib.gridspec as gridspec
 import os
 from pathlib import Path
 from datetime import datetime
+import argparse
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import Ridge
 import optuna
@@ -163,6 +164,15 @@ FEATURES = [
 ]
 TARGET   = 'depth_inches'
 TV_SPLIT = (0.70, 0.15, 0.15)
+
+# CLI flags (parse known args to avoid notebook-injected flags)
+parser = argparse.ArgumentParser(add_help=True)
+parser.add_argument(
+    "--input-file",
+    default="rain_influenced_gages.parquet",
+    help="Parquet filename under Data_Files/ or absolute path.",
+)
+args, _unknown = parser.parse_known_args()
  
 HPO_DB_NAME = "floodnet_hpo_newfilter.db"
 DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/{HPO_DB_NAME}"
@@ -285,11 +295,13 @@ best_params = {
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 3 │ Data Loading and Storm-Aware Split
 # ─────────────────────────────────────────────────────────────────────────────
-file_path = DATA_DIR / "delineated_storms.parquet"
+input_file = Path(args.input_file)
+file_path = input_file if input_file.is_absolute() else (DATA_DIR / input_file)
 if not file_path.exists():
     raise FileNotFoundError(f"Data not found at: {file_path}")
  
 df = pd.read_parquet(file_path)
+print(f"✅ Loaded data from: {file_path}")
 print(f"✅ Loaded data: {len(df):,} rows")
  
 # ── Resolve storm identifier column ──────────────────────────────────────────
