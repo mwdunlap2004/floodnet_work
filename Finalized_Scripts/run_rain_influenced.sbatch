@@ -20,10 +20,12 @@ set -euo pipefail
 # Optional overrides:
 #   --export=PROJECT_ROOT=/home/upw4ys/Documents/floodnet_work
 #   --export=DATA_FILE=rain_influenced_gages.parquet
+#   --export=RAW_FILE=rain_influenced_sites_raw.parquet
 
 PROJECT_ROOT="${PROJECT_ROOT:-/home/upw4ys/Documents/floodnet_work}"
 STEP="${STEP:-both}"
 DATA_FILE="${DATA_FILE:-rain_influenced_gages.parquet}"
+RAW_FILE="${RAW_FILE:-rain_influenced_sites_raw.parquet}"
 
 cd "$PROJECT_ROOT"
 source .venv/bin/activate
@@ -31,6 +33,7 @@ source .venv/bin/activate
 echo "PROJECT_ROOT=$PROJECT_ROOT"
 echo "STEP=$STEP"
 echo "DATA_FILE=$DATA_FILE"
+echo "RAW_FILE=$RAW_FILE"
 
 case "$STEP" in
   hpo)
@@ -44,7 +47,13 @@ case "$STEP" in
     python Finalized_Scripts/model_training.py --input-file "$DATA_FILE"
     ;;
   all)
-    python Finalized_Scripts/select_precip_influenced_gages.py --output "Data_Files/$DATA_FILE"
+    python Finalized_Scripts/select_precip_influenced_gages.py \
+      --input Data_Files/floodnet_full_dataset_merged_with_weather.parquet \
+      --output "Data_Files/$RAW_FILE" \
+      --top-n 10
+    python Finalized_Scripts/delineate_filtered_storms.py \
+      --input "Data_Files/$RAW_FILE" \
+      --output "Data_Files/$DATA_FILE"
     python Finalized_Scripts/hpo_search.py --input-file "$DATA_FILE"
     python Finalized_Scripts/model_training.py --input-file "$DATA_FILE"
     ;;

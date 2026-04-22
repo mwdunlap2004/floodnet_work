@@ -63,9 +63,10 @@ Primary shared data location:
 | `floodnet_parquet_data/*.parquet` | `Finalized_Scripts/parquet_floodnet_download.py` | `Finalized_Scripts/joining_parquets.ipynb` |
 | `floodnet_full_dataset_merged.parquet` | `Finalized_Scripts/joining_parquets.ipynb` | intermediate checks |
 | `floodnet_floods_only.parquet` | `Finalized_Scripts/joining_parquets.ipynb` | `Finalized_Scripts/flood_duration.ipynb` |
-| `floodnet_full_dataset_merged_with_weather.parquet` | `Finalized_Scripts/spatial_join.ipynb` | `Finalized_Scripts/updated_method_storm_seperation.ipynb` |
-| `delineated_storms.parquet` | `Finalized_Scripts/updated_method_storm_seperation.ipynb` | `Finalized_Scripts/floodnet_eda.ipynb`, `Finalized_Scripts/select_precip_influenced_gages.py` |
-| `rain_influenced_gages.parquet` | `Finalized_Scripts/select_precip_influenced_gages.py` | `Finalized_Scripts/rain_influenced_EDA.ipynb`, `Finalized_Scripts/hpo_search.py`, `Finalized_Scripts/model_training.py` |
+| `floodnet_full_dataset_merged_with_weather.parquet` | `Finalized_Scripts/spatial_join.ipynb` | `Finalized_Scripts/select_precip_influenced_gages.py` |
+| `rain_influenced_sites_raw.parquet` | `Finalized_Scripts/select_precip_influenced_gages.py` | `Finalized_Scripts/delineate_filtered_storms.py` |
+| `rain_influenced_gages.parquet` | `Finalized_Scripts/delineate_filtered_storms.py` | `Finalized_Scripts/rain_influenced_EDA.ipynb`, `Finalized_Scripts/hpo_search.py`, `Finalized_Scripts/model_training.py` |
+| `delineated_storms.parquet` | `Finalized_Scripts/updated_method_storm_seperation.ipynb` | `Finalized_Scripts/floodnet_eda.ipynb` |
 | `floodnet_hpo_newfilter.db` | `Finalized_Scripts/hpo_search.py` | `Finalized_Scripts/model_training.py` |
 
 ## 4. Notebook Run Order
@@ -75,12 +76,12 @@ Use this order for a clean, reproducible workflow:
 1. `Finalized_Scripts/parquet_floodnet_download.py`
 2. `Finalized_Scripts/joining_parquets.ipynb`
 3. `Finalized_Scripts/spatial_join.ipynb`
-4. `Finalized_Scripts/updated_method_storm_seperation.ipynb`
-5. `Finalized_Scripts/select_precip_influenced_gages.py` (creates `Data_Files/rain_influenced_gages.parquet`)
-6. `Finalized_Scripts/rain_influenced_EDA.ipynb` (rain-coupling diagnostics for selected gages)
+4. `Finalized_Scripts/select_precip_influenced_gages.py` (top-10 gages, 30-day tidal gate; creates `Data_Files/rain_influenced_sites_raw.parquet`)
+5. `Finalized_Scripts/delineate_filtered_storms.py` (creates final training input `Data_Files/rain_influenced_gages.parquet`)
+6. `Finalized_Scripts/rain_influenced_EDA.ipynb` (rain-coupling diagnostics for selected/delineated gages)
 7. `Finalized_Scripts/hpo_search.py` (default input: `rain_influenced_gages.parquet`)
 8. `Finalized_Scripts/model_training.py` (default input: `rain_influenced_gages.parquet`)
-9. Optional analysis notebooks: `Finalized_Scripts/floodnet_eda.ipynb`, `Finalized_Scripts/flood_duration.ipynb`, `Finalized_Scripts/finalized_lstm_modeling.ipynb`
+9. Optional full-network analysis notebooks: `Finalized_Scripts/updated_method_storm_seperation.ipynb`, `Finalized_Scripts/floodnet_eda.ipynb`, `Finalized_Scripts/flood_duration.ipynb`, `Finalized_Scripts/finalized_lstm_modeling.ipynb`
 
 ## 5. SLURM Submission
 
