@@ -16,3 +16,5 @@ GEMINI.md
 Finalized_Scripts/__pycache__/model_training.cpython-313.pyc
 Finalized_Scripts/__pycache__/hpo_search.cpython-313.pyc
 Finalized_Scripts/__pycache__/select_precip_influenced_gages.cpython-313.pyc
+hpo_*.out
+hpo_*.err
