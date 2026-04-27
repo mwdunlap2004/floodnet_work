@@ -2,7 +2,7 @@
 #SBATCH --job-name=flood_local
 #SBATCH --output=local_train_%j.out
 #SBATCH --error=local_train_%j.err
-#SBATCH --partition=gpu
+#SBATCH --partition=interactive
 #SBATCH --account=ds6050_sp26 
 #SBATCH --gres=gpu:2             
 #SBATCH --cpus-per-task=4        

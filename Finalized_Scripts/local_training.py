@@ -1,11 +1,6 @@
-# %%
 # ─────────────────────────────────────────────────────────────────────────────
 # 03_local_training.py
 # FloodNet — Local Model Training Script (Per-Gage)
-# Loads global optimal hyperparameters, then loops through each deployment_id.
-# For each gage, it scales data locally, trains bespoke Log-Ridge, Res-ANN, 
-# and Attn-LSTM models, evaluates on a held-out Test set, and aggregates the 
-# local accuracy metrics.
 # ─────────────────────────────────────────────────────────────────────────────
 import torch
 import torch.nn as nn
@@ -14,13 +9,10 @@ import torch.optim as optim
 from torch.amp import autocast, GradScaler
 import pandas as pd
 import numpy as np
-import json
 import gc
 import warnings
-import matplotlib.pyplot as plt
 import os
 from pathlib import Path
-from datetime import datetime
 import argparse
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import Ridge
@@ -38,27 +30,6 @@ print(f"🚀 Using {N_GPUS} GPU(s) for Local Modeling:")
 SEED = 42
 torch.manual_seed(SEED)
 np.random.seed(SEED)
-
-def vram_free_gb(device: int = 0):
-    torch.cuda.synchronize(device)
-    free, total = torch.cuda.mem_get_info(device)
-    return free / 1e9, total / 1e9
-
-def safe_batch_size(model, sample_input, starting_batch=32768, min_batch=512):
-    batch = starting_batch
-    model.eval()
-    while batch >= min_batch:
-        try:
-            torch.cuda.empty_cache()
-            dummy = sample_input[:batch].to(PRIMARY)
-            with torch.no_grad(), autocast(device_type='cuda'):
-                _ = model(dummy)
-            del dummy
-            torch.cuda.empty_cache()
-            return batch
-        except torch.cuda.OutOfMemoryError:
-            batch //= 2
-    return min_batch
 
 def train_step(model, opt, amp_scaler, bx, by, loss_fn, clip_grad=None):
     try:
@@ -187,17 +158,8 @@ bp_lr = study_lr.best_params
 bp_ann = study_ann.best_params
 bp_lstm = study_lstm.best_params
 
-# ── Global Storm Split (Ensures local models train/test on the same events) ──
 df_clean = df.dropna(subset=FEATURES + [TARGET, STORM_COL, DEPLOY_COL]).copy()
 df_clean[FEATURES + [TARGET]] = df_clean[FEATURES + [TARGET]].astype('float32')
-
-global_storms = df_clean[STORM_COL].unique()
-n_tr = int(len(global_storms) * TV_SPLIT[0])
-n_va = int(len(global_storms) * TV_SPLIT[1])
-
-train_storms = global_storms[:n_tr]
-val_storms   = global_storms[n_tr : n_tr + n_va]
-test_storms  = global_storms[n_tr + n_va :]
 
 print(f"✅ Loaded {len(df_clean):,} rows across {df_clean[DEPLOY_COL].nunique()} unique gages.")
 
@@ -209,11 +171,20 @@ for idx, gage in enumerate(gages):
     print(f"\n[{idx+1}/{len(gages)}] 📍 Training Local Models for Gage: {gage}")
     gage_df = df_clean[df_clean[DEPLOY_COL] == gage].copy()
     
+    # --- FIX 1: Local Train/Val/Test Split ---
+    gage_storms = gage_df[STORM_COL].unique()
+    n_tr = int(len(gage_storms) * TV_SPLIT[0])
+    n_va = int(len(gage_storms) * TV_SPLIT[1])
+    
+    train_storms = gage_storms[:n_tr]
+    val_storms   = gage_storms[n_tr : n_tr + n_va]
+    test_storms  = gage_storms[n_tr + n_va :]
+    
     tr_df = gage_df[gage_df[STORM_COL].isin(train_storms)]
     va_df = gage_df[gage_df[STORM_COL].isin(val_storms)]
     te_df = gage_df[gage_df[STORM_COL].isin(test_storms)]
     
-    if len(tr_df) < 500 or len(te_df) < 100:
+    if len(tr_df) < 100 or len(te_df) < 20: # Lowered threshold slightly since we are local
         print(f"   ⚠️ Not enough data (Train: {len(tr_df)}, Test: {len(te_df)}). Skipping.")
         continue
 
@@ -253,10 +224,13 @@ for idx, gage in enumerate(gages):
     # 2. Local Res-ANN
     ann = wrap_model(SotaANN(len(FEATURES), int(bp_ann["hidden_size"]), int(bp_ann["n_layers"]), float(bp_ann["dropout"])))
     opt_ann = optim.AdamW(ann.parameters(), lr=float(bp_ann["lr"]), weight_decay=float(bp_ann.get("weight_decay", 0.0)))
-    batch_ann = safe_batch_size(ann, X_tv_gpu, starting_batch=8192, min_batch=256)
+    
+    # --- FIX 2: Restrict Batch Size for Mini-Batch Gradient Descent ---
+    batch_ann = min(256, len(X_tv_gpu))
     
     ann.train()
-    for epoch in range(40): # Reduced epochs for local training speed
+    # --- FIX 3: Increase Epochs for local training ---
+    for epoch in range(100): 
         perm = torch.randperm(len(X_tv_gpu), device=PRIMARY)
         for i in range(0, len(X_tv_gpu), batch_ann):
             idx = perm[i : i + batch_ann]
@@ -274,16 +248,19 @@ for idx, gage in enumerate(gages):
     Xtv_w, ytv_w = build_storm_windows(X_tv, y_tv, sid_tv, window)
     Xte_w, yte_w = build_storm_windows(X_te, scaler_y.transform(te_df[[TARGET]]), sid_te, window)
 
-    if len(Xtv_w) > 100 and len(Xte_w) > 50:
+    if len(Xtv_w) > 50 and len(Xte_w) > 10:
         lstm = wrap_model(SotaAttentionLSTM(len(FEATURES), int(bp_lstm["hidden_size"]), int(bp_lstm["n_layers"]), float(bp_lstm["dropout"])))
         opt_lstm = optim.AdamW(lstm.parameters(), lr=float(bp_lstm["lr"]), weight_decay=float(bp_lstm.get("weight_decay", 0.0)))
         
         Xtv_t = torch.tensor(Xtv_w, dtype=torch.float32)
         ytv_t = torch.tensor(ytv_w, dtype=torch.float32)
-        batch_lstm = safe_batch_size(lstm, Xtv_t[:1].to(PRIMARY).expand(1024, -1, -1), starting_batch=1024, min_batch=64)
+        
+        # --- FIX 2: Restrict Batch Size ---
+        batch_lstm = min(128, len(Xtv_t))
 
         lstm.train()
-        for epoch in range(30):
+        # --- FIX 3: Increase Epochs ---
+        for epoch in range(100):
             perm = torch.randperm(len(Xtv_t))
             for i in range(0, len(Xtv_t), batch_lstm):
                 idx = perm[i : i + batch_lstm]
@@ -307,15 +284,18 @@ for idx, gage in enumerate(gages):
     local_results.append(gage_metrics)
 
 # ── Summary & Export ─────────────────────────────────────────────────────────
-results_df = pd.DataFrame(local_results)
-out_csv = RESULTS_DIR / "local_models_summary.csv"
-results_df.to_csv(out_csv, index=False)
+if len(local_results) > 0:
+    results_df = pd.DataFrame(local_results)
+    out_csv = RESULTS_DIR / "local_models_summary.csv"
+    results_df.to_csv(out_csv, index=False)
 
-print("\n" + "═"*60)
-print(f"✅ Local Training Complete. Processed {len(results_df)} gages.")
-print("═"*60)
-print("Median Local Test Performance:")
-print(f"  Log-Ridge : NSE = {results_df['LR_NSE'].median():.3f} | KGE = {results_df['LR_KGE'].median():.3f}")
-print(f"  Res-ANN   : NSE = {results_df['ANN_NSE'].median():.3f} | KGE = {results_df['ANN_KGE'].median():.3f}")
-print(f"  Attn-LSTM : NSE = {results_df['LSTM_NSE'].median():.3f} | KGE = {results_df['LSTM_KGE'].median():.3f}")
-print(f"\n📊 Full local metrics saved to: {out_csv}")
+    print("\n" + "═"*60)
+    print(f"✅ Local Training Complete. Processed {len(results_df)} gages.")
+    print("═"*60)
+    print("Median Local Test Performance:")
+    print(f"  Log-Ridge : NSE = {results_df['LR_NSE'].median():.3f} | KGE = {results_df['LR_KGE'].median():.3f}")
+    print(f"  Res-ANN   : NSE = {results_df['ANN_NSE'].median():.3f} | KGE = {results_df['ANN_KGE'].median():.3f}")
+    print(f"  Attn-LSTM : NSE = {results_df['LSTM_NSE'].median():.3f} | KGE = {results_df['LSTM_KGE'].median():.3f}")
+    print(f"\n📊 Full local metrics saved to: {out_csv}")
+else:
+    print("\n⚠️ No gages were successfully processed.")
