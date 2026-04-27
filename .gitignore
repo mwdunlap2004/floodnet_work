@@ -17,8 +17,12 @@ Finalized_Scripts/__pycache__/model_training.cpython-313.pyc
 Finalized_Scripts/__pycache__/hpo_search.cpython-313.pyc
 Finalized_Scripts/__pycache__/select_precip_influenced_gages.cpython-313.pyc
 hpo_*.out
+<<<<<<< HEAD
 hpo_*.err
 Finalized_Scripts/__pycache__/delineate_filtered_storms.cpython-312.pyc
 .gitignore
 Finalized_Scripts/__pycache__/select_precip_influenced_gages.cpython-312.pyc
 Finalized_Scripts/__pycache__/delineate_filtered_storms.cpython-313.pyc
+=======
+hpo_*.err
+>>>>>>> 4efc23c78c4344932e88a1669d7f73e51f4ac7a1
