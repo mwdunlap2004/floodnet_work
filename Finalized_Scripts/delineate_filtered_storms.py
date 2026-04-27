@@ -213,9 +213,9 @@ def main() -> None:
         significant_storms AS (
             SELECT *
             FROM storm_metrics
-            WHERE total_precip_in >= 0.25
-               OR peak_intensity_inh >= 0.10
-               OR (net_depth_rise_in >= 1.0 AND COALESCE(total_precip_in, 0) >= 0.05)
+            WHERE total_precip_in >= 0.15
+               OR peak_intensity_inh >= 0.08
+               OR (net_depth_rise_in >= 0.75 AND COALESCE(total_precip_in, 0) >= 0.05)
         )
 
         SELECT
