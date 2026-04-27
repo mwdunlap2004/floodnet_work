@@ -130,12 +130,50 @@ df_clean[FEATURES + [TARGET]] = df_clean[FEATURES + [TARGET]].astype('float32')
 # pandas unique() preserves insertion order → chronological if data is sorted.
 storm_ids = df_clean[STORM_COL].unique()
 n_storms  = len(storm_ids)
-n_tr      = int(n_storms * TV_SPLIT[0])
-n_va      = int(n_storms * TV_SPLIT[1])
- 
+
+if n_storms < 3:
+    raise ValueError(
+        f"Need at least 3 storms for train/val/test split, found {n_storms}. "
+        "Use a larger dataset or a 2-way split."
+    )
+
+split_props = np.array(TV_SPLIT, dtype=float)
+split_props = split_props / split_props.sum()
+split_counts = np.floor(split_props * n_storms).astype(int)
+
+# Ensure each non-zero-proportion split has at least one storm.
+for i, p in enumerate(split_props):
+    if p > 0 and split_counts[i] == 0:
+        split_counts[i] = 1
+
+# Rebalance counts to sum exactly to n_storms without emptying any split.
+while split_counts.sum() > n_storms:
+    idx = int(np.argmax(split_counts))
+    if split_counts[idx] > 1:
+        split_counts[idx] -= 1
+    else:
+        break
+
+while split_counts.sum() < n_storms:
+    idx = int(np.argmax(split_props))
+    split_counts[idx] += 1
+
+if split_counts.sum() != n_storms:
+    raise ValueError(
+        "Could not create a non-empty train/val/test storm split with "
+        f"{n_storms} storms and TV_SPLIT={TV_SPLIT}."
+    )
+
+if np.any(split_counts <= 0):
+    raise ValueError(
+        f"Invalid storm split counts {split_counts.tolist()} for {n_storms} storms."
+    )
+
+n_tr, n_va, n_te = split_counts.tolist()
+
 train_storms = storm_ids[:n_tr]
 val_storms   = storm_ids[n_tr : n_tr + n_va]
-test_storms  = storm_ids[n_tr + n_va :]
+test_storms  = storm_ids[n_tr + n_va : n_tr + n_va + n_te]
  
 train_df = df_clean[df_clean[STORM_COL].isin(train_storms)].copy()
 val_df   = df_clean[df_clean[STORM_COL].isin(val_storms)].copy()
