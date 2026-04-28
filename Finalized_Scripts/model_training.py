@@ -395,6 +395,11 @@ test_events  = split_ids[n_tr + n_va :]
 train_df = df_clean[df_clean[SPLIT_COL].isin(train_events)].copy()
 val_df   = df_clean[df_clean[SPLIT_COL].isin(val_events)].copy()
 test_df  = df_clean[df_clean[SPLIT_COL].isin(test_events)].copy()
+
+# Storm IDs per split (used for run logging and plotting selection)
+train_storms = train_df[STORM_COL].dropna().unique().tolist()
+val_storms   = val_df[STORM_COL].dropna().unique().tolist()
+test_storms  = test_df[STORM_COL].dropna().unique().tolist()
  
 print(f"\n📊 Chronological Event-Based Split (Non-Leaky):")
 print(f"   Train : {len(train_df):>8,} rows  ({len(train_events):>4} events)")
@@ -524,24 +529,47 @@ def wrap_model(model: nn.Module) -> nn.Module:
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 7 │ Hydrological Performance Metrics
 # ─────────────────────────────────────────────────────────────────────────────
-def nse(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
+def nse(y_true: torch.Tensor, y_pred: torch.Tensor, eps: float = 1e-9) -> float:
+    var_term = torch.sum((y_true - y_true.mean()) ** 2)
+    if torch.isnan(var_term) or torch.isinf(var_term) or var_term.item() <= eps:
+        return float("nan")
     num = torch.sum((y_true - y_pred) ** 2)
-    den = torch.sum((y_true - y_true.mean()) ** 2) + 1e-9
-    return (1 - num / den).item()
+    return (1 - num / var_term).item()
  
-def kge(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    r     = np.corrcoef(y_true, y_pred)[0, 1]
-    alpha = y_pred.std()  / (y_true.std()  + 1e-9)
-    beta  = y_pred.mean() / (y_true.mean() + 1e-9)
-    return 1 - np.sqrt((r - 1)**2 + (alpha - 1)**2 + (beta - 1)**2)
+def kge(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-9) -> float:
+    yt_std = float(np.std(y_true))
+    yp_std = float(np.std(y_pred))
+    yt_mean = float(np.mean(y_true))
+    if (not np.isfinite(yt_std)) or (not np.isfinite(yp_std)) or (not np.isfinite(yt_mean)):
+        return float("nan")
+    if yt_std <= eps or abs(yt_mean) <= eps:
+        return float("nan")
+    r = np.corrcoef(y_true, y_pred)[0, 1]
+    if not np.isfinite(r):
+        return float("nan")
+    alpha = yp_std / yt_std
+    beta = float(np.mean(y_pred)) / yt_mean
+    if not np.isfinite(alpha) or not np.isfinite(beta):
+        return float("nan")
+    return float(1 - np.sqrt((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2))
  
 def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
  
-def pbias(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    return float(100 * np.sum(y_true - y_pred) / (np.sum(y_true) + 1e-9))
+def pbias(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-9) -> float:
+    den = float(np.sum(y_true))
+    if (not np.isfinite(den)) or abs(den) <= eps:
+        return float("nan")
+    return float(100 * np.sum(y_true - y_pred) / den)
  
 def eval_metrics(name: str, y_true_np: np.ndarray, y_pred_np: np.ndarray) -> dict:
+    y_true_np = np.asarray(y_true_np, dtype=np.float32).reshape(-1)
+    y_pred_np = np.asarray(y_pred_np, dtype=np.float32).reshape(-1)
+    valid = np.isfinite(y_true_np) & np.isfinite(y_pred_np)
+    y_true_np = y_true_np[valid]
+    y_pred_np = y_pred_np[valid]
+    if y_true_np.size == 0:
+        return {'Model': name, 'NSE': np.nan, 'KGE': np.nan, 'RMSE': np.nan, 'PBIAS': np.nan}
     yt = torch.tensor(y_true_np, device=PRIMARY)
     yp = torch.tensor(y_pred_np, device=PRIMARY)
     return {
