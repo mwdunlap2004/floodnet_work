@@ -1,2 +1,6 @@
 deployment_id,train_rows,test_rows,LR_NSE,LR_KGE,ANN_NSE,ANN_KGE,LSTM_NSE,LSTM_KGE
-nicely-emerging-escargot,2999,976,-0.006179571,,-29.626606,-18.62063055393688,-0.6729239,-8.995023839035463
+generally-measured-sheepdog,501,484,-615148.25,,-5.641222e+07,,-6.0097015e+06,
+humbly-sound-zebra,497,478,-9.705788e+06,,-1.6543634e+08,,-145038.1,
+nicely-emerging-escargot,2999,976,-0.006179571,,-7.3202877,-24.080886141653345,-0.06662941,-1.6134556301613658
+properly-pro-wallaby,497,484,-1.7390032e+07,,-7.5193325e+08,,-2.260417e+06,
+sensibly-relaxing-stork,499,480,-335621.66,,-9.6022035e+08,,-2.0815056e+07,

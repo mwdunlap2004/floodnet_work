@@ -1,83 +1,83 @@
 {
-  "timestamp": "2026-04-22T04:39:11.585313",
+  "timestamp": "2026-04-28T03:08:47.856737",
   "best_params": {
     "log_ridge": {
-      "alpha": 1.9078073679984862e-05,
-      "log_shift": 0.9995090019722803,
+      "alpha": 0.00020314229909992916,
+      "log_shift": 0.06238110974489954,
       "target_transform": "log"
     },
     "res_ann": {
-      "hidden_size": 512,
-      "n_layers": 2,
-      "lr": 0.0022406013521572995,
-      "dropout": 0.0690737088657513,
-      "weight_decay": 1.100002711964986e-08,
-      "loss_fn": "mse"
+      "hidden_size": 640,
+      "n_layers": 4,
+      "lr": 5.813061479602062e-05,
+      "dropout": 0.13101562978691886,
+      "weight_decay": 1.3561792041606843e-07,
+      "loss_fn": "huber"
     },
     "attn_lstm": {
-      "window_size": 60,
-      "hidden_size": 160,
-      "n_layers": 2,
-      "lr": 0.00014639847680621745,
-      "dropout": 0.09177793420835692,
-      "weight_decay": 3.613894271216526e-08,
-      "loss_fn": "mse"
+      "window_size": 30,
+      "hidden_size": 128,
+      "n_layers": 3,
+      "lr": 0.000562056055081138,
+      "dropout": 0.017048262732786038,
+      "weight_decay": 3.537362005314277e-05,
+      "loss_fn": "huber"
     }
   },
   "train_metrics": {
     "NSE": {
-      "Log-Ridge": 0.0053,
-      "Res-ANN": 0.2589,
-      "Attn-LSTM": 0.2131
+      "Log-Ridge": 0.5644,
+      "Res-ANN": 0.135,
+      "Attn-LSTM": 0.7945
     },
     "KGE": {
-      "Log-Ridge": -0.4497,
-      "Res-ANN": 0.303,
-      "Attn-LSTM": 0.2341
+      "Log-Ridge": 0.2806,
+      "Res-ANN": -0.1473,
+      "Attn-LSTM": 0.8742
     },
     "RMSE": {
-      "Log-Ridge": 1.725,
-      "Res-ANN": 1.489,
-      "Attn-LSTM": 1.5364
+      "Log-Ridge": 0.0411,
+      "Res-ANN": 0.058,
+      "Attn-LSTM": 0.0285
     },
     "PBIAS": {
-      "Log-Ridge": 69.97,
-      "Res-ANN": -2.4,
-      "Attn-LSTM": 14.82
+      "Log-Ridge": 44.48,
+      "Res-ANN": -61.36,
+      "Attn-LSTM": -2.63
     }
   },
   "test_metrics": {
     "NSE": {
-      "Log-Ridge": -0.0202,
-      "Res-ANN": 0.1707,
-      "Attn-LSTM": 0.1277
+      "Log-Ridge": 0.4646,
+      "Res-ANN": 0.0519,
+      "Attn-LSTM": -1.8633
     },
     "KGE": {
-      "Log-Ridge": -0.5257,
-      "Res-ANN": 0.2445,
-      "Attn-LSTM": 0.1812
+      "Log-Ridge": 0.2592,
+      "Res-ANN": -2.1003,
+      "Attn-LSTM": -1.9873
     },
     "RMSE": {
-      "Log-Ridge": 1.7145,
-      "Res-ANN": 1.5458,
-      "Attn-LSTM": 1.5829
+      "Log-Ridge": 0.0274,
+      "Res-ANN": 0.0365,
+      "Attn-LSTM": 0.0654
     },
     "PBIAS": {
-      "Log-Ridge": 84.54,
-      "Res-ANN": 27.13,
-      "Attn-LSTM": 38.7
+      "Log-Ridge": -69.05,
+      "Res-ANN": -295.06,
+      "Attn-LSTM": -274.25
     }
   },
   "overfit_gaps": {
     "Delta_NSE_train_minus_test": {
-      "Log-Ridge": 0.0255,
-      "Res-ANN": 0.08820000000000003,
-      "Attn-LSTM": 0.0854
+      "Log-Ridge": 0.0998,
+      "Res-ANN": 0.08310000000000001,
+      "Attn-LSTM": 2.6578
     },
     "Delta_KGE_train_minus_test": {
-      "Log-Ridge": 0.07599999999999996,
-      "Res-ANN": 0.058499999999999996,
-      "Attn-LSTM": 0.0529
+      "Log-Ridge": 0.02140000000000003,
+      "Res-ANN": 1.9529999999999998,
+      "Attn-LSTM": 2.8615
     }
   },
   "guardrails": {
@@ -86,28 +86,28 @@
     "val_kge_tolerance": 0.05,
     "selected_trials": {
       "log_ridge": {
-        "trial_number": 102,
-        "val_nse": 0.0062157511711120605,
-        "val_kge": -0.39650702382345937
+        "trial_number": 234,
+        "val_nse": 0.46163833141326904,
+        "val_kge": 0.11037445492004483
       },
       "res_ann": {
-        "trial_number": 39,
-        "val_nse": 0.23224222660064697,
-        "val_kge": 0.2999347108866557
+        "trial_number": 238,
+        "val_nse": 0.40912139415740967,
+        "val_kge": -0.2062847895540305
       },
       "attn_lstm": {
-        "trial_number": 4,
-        "val_nse": 0.24677306413650513,
-        "val_kge": 0.36434154527863105
+        "trial_number": 32,
+        "val_nse": 0.4791553020477295,
+        "val_kge": 0.4374381756035044
       }
     }
   },
   "data": {
-    "train_rows": 5128938,
-    "val_rows": 407823,
-    "test_rows": 120584,
-    "train_storms": 210,
-    "val_storms": 45,
-    "test_storms": 46
+    "train_rows": 7240,
+    "val_rows": 0,
+    "test_rows": 976,
+    "train_storms": 4,
+    "val_storms": 0,
+    "test_storms": 2
   }
 }
