@@ -37,10 +37,10 @@ warnings.filterwarnings('ignore')
 # %%
 # ── Multi-GPU Setup ──────────────────────────────────────────────────────────
 N_GPUS  = min(torch.cuda.device_count(), 2)
-PRIMARY = torch.device("cuda:0")
-scaler_amp = GradScaler(device='cuda')
+PRIMARY = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+scaler_amp = GradScaler(device=PRIMARY.type) if torch.cuda.is_available() else None
  
-print(f"🚀 Using {N_GPUS} GPU(s):")
+print(f"🚀 Using {N_GPUS} GPU(s) | Primary: {PRIMARY}")
 for i in range(N_GPUS):
     p = torch.cuda.get_device_properties(i)
     print(f"   [{i}] {p.name}  ({p.total_memory / 1e9:.1f} GB)")
@@ -306,7 +306,7 @@ print(f"✅ Loaded data: {len(df):,} rows")
  
 # ── Resolve storm identifier column ──────────────────────────────────────────
 STORM_COL = None
-for candidate in ['storm_id', 'event_id', 'storm', 'event']:
+for candidate in ['global_storm_id', 'storm_id', 'event_id', 'storm', 'event']:
     if candidate in df.columns:
         STORM_COL = candidate
         break
@@ -326,32 +326,80 @@ else:
 # %%
 # ── Drop incomplete rows, cast to float32 ────────────────────────────────────
 # Keep optional metadata columns for downstream diagnostics/exports.
-META_CANDIDATES = ["deployment_id", "time", "timestamp", "datetime"]
+META_CANDIDATES = ["deployment_id", "time", "timestamp", "datetime", "global_storm_id", "storm_start", "storm_end"]
 META_COLS = [c for c in META_CANDIDATES if c in df.columns]
 
-df_clean = df[FEATURES + [TARGET, STORM_COL] + META_COLS].dropna(
+# Use a set to avoid duplicate column names if STORM_COL is in META_COLS
+all_cols = list(dict.fromkeys(FEATURES + [TARGET, STORM_COL] + META_COLS))
+df_clean = df[all_cols].dropna(
     subset=FEATURES + [TARGET, STORM_COL]
 ).copy()
 df_clean[FEATURES + [TARGET]] = df_clean[FEATURES + [TARGET]].astype('float32')
+
+# ── Chronological non-leaky split ──────────────────────────────────────────
+# We group overlapping storms across sensors into 'global_events' to prevent
+# data leakage (same storm in both train and test).
+if 'global_storm_id' in df_clean.columns and 'storm_start' in df_clean.columns:
+    storm_meta = df_clean[['global_storm_id', 'storm_start', 'storm_end']].drop_duplicates()
+    storm_meta = storm_meta.sort_values('storm_start')
+    
+    event_ids = []
+    if not storm_meta.empty:
+        curr_id = 0
+        curr_end = storm_meta.iloc[0]['storm_end']
+        for _, row in storm_meta.iterrows():
+            if row['storm_start'] < curr_end:
+                event_ids.append(curr_id)
+                curr_end = max(curr_end, row['storm_end'])
+            else:
+                curr_id += 1
+                event_ids.append(curr_id)
+                curr_end = row['storm_end']
+        storm_meta['global_event_id'] = event_ids
+        
+        # Map back to df_clean
+        df_clean = df_clean.merge(storm_meta[['global_storm_id', 'global_event_id']], on='global_storm_id', how='left')
+        SPLIT_COL = 'global_event_id'
+    else:
+        SPLIT_COL = STORM_COL
+else:
+    SPLIT_COL = STORM_COL
+
+split_ids = df_clean[SPLIT_COL].unique()
+n_events = len(split_ids)
+
+# Robust rebalancing (from hpo_search.py)
+split_props = np.array(TV_SPLIT, dtype=float)
+split_props = split_props / split_props.sum()
+split_counts = np.floor(split_props * n_events).astype(int)
+
+for i, p in enumerate(split_props):
+    if p > 0 and split_counts[i] == 0:
+        split_counts[i] = 1
+
+while split_counts.sum() > n_events:
+    idx = int(np.argmax(split_counts))
+    if split_counts[idx] > 1:
+        split_counts[idx] -= 1
+    else:
+        break
+while split_counts.sum() < n_events:
+    idx = int(np.argmax(split_props))
+    split_counts[idx] += 1
+
+n_tr, n_va, n_te = split_counts.tolist()
+train_events = split_ids[:n_tr]
+val_events   = split_ids[n_tr : n_tr + n_va]
+test_events  = split_ids[n_tr + n_va :]
  
-# ── Chronological storm-level split ──────────────────────────────────────────
-storm_ids = df_clean[STORM_COL].unique()
-n_storms  = len(storm_ids)
-n_tr      = int(n_storms * TV_SPLIT[0])
-n_va      = int(n_storms * TV_SPLIT[1])
+train_df = df_clean[df_clean[SPLIT_COL].isin(train_events)].copy()
+val_df   = df_clean[df_clean[SPLIT_COL].isin(val_events)].copy()
+test_df  = df_clean[df_clean[SPLIT_COL].isin(test_events)].copy()
  
-train_storms = storm_ids[:n_tr]
-val_storms   = storm_ids[n_tr : n_tr + n_va]
-test_storms  = storm_ids[n_tr + n_va :]
- 
-train_df = df_clean[df_clean[STORM_COL].isin(train_storms)].copy()
-val_df   = df_clean[df_clean[STORM_COL].isin(val_storms)].copy()
-test_df  = df_clean[df_clean[STORM_COL].isin(test_storms)].copy()
- 
-print(f"\n📊 Storm-aware partition:")
-print(f"   Train : {len(train_df):>8,} rows  ({len(train_storms):>4} storms)")
-print(f"   Val   : {len(val_df):>8,} rows  ({len(val_storms):>4} storms)")
-print(f"   Test  : {len(test_df):>8,} rows  ({len(test_storms):>4} storms)")
+print(f"\n📊 Chronological Event-Based Split (Non-Leaky):")
+print(f"   Train : {len(train_df):>8,} rows  ({len(train_events):>4} events)")
+print(f"   Val   : {len(val_df):>8,} rows  ({len(val_events):>4} events)")
+print(f"   Test  : {len(test_df):>8,} rows  ({len(test_events):>4} events)")
 
 # %%
 # %%─────────────────────────────────────────────────────────────────────────

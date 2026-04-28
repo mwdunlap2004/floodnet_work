@@ -30,10 +30,10 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 # DataParallel splits each mini-batch across available GPUs automatically.
 # PRIMARY is where tensors live; DataParallel handles the rest.
 N_GPUS  = min(torch.cuda.device_count(), 2)
-PRIMARY = torch.device("cuda:0")
-scaler_amp = GradScaler(device='cuda')
+PRIMARY = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+scaler_amp = GradScaler(device=PRIMARY.type) if torch.cuda.is_available() else None
  
-print(f"🚀 Using {N_GPUS} GPU(s):")
+print(f"🚀 Using {N_GPUS} GPU(s) | Primary: {PRIMARY}")
 for i in range(N_GPUS):
     p = torch.cuda.get_device_properties(i)
     print(f"   [{i}] {p.name}  ({p.total_memory / 1e9:.1f} GB)")
@@ -96,93 +96,98 @@ df = pd.read_parquet(file_path)
 print(f"Successfully loaded data from: {file_path}")
 
 # %%
-# ── Resolve storm identifier column ─────────────────────────────────────────
+# ── Resolve storm identifier column ──────────────────────────────────────────
 STORM_COL = None
-for candidate in ['storm_id', 'event_id', 'storm', 'event']:
+for candidate in ['global_storm_id', 'storm_id', 'event_id', 'storm', 'event']:
     if candidate in df.columns:
         STORM_COL = candidate
         break
  
 if STORM_COL is None:
-    # Fall back: infer storms from gaps in the datetime index.
-    # A gap > 6 h with no precipitation is a standard hydrological inter-event
-    # criterion (e.g., USEPA, 1986). Adjust threshold for your sensor cadence.
     if isinstance(df.index, pd.DatetimeIndex):
         gap_seconds = df.index.to_series().diff().dt.total_seconds().fillna(0)
         df['_storm_id'] = (gap_seconds > 6 * 3600).cumsum()
     else:
-        # Last resort: chunk sequentially (not ideal, but safe)
         CHUNK = 500
         df['_storm_id'] = np.arange(len(df)) // CHUNK
     STORM_COL = '_storm_id'
-    print(f"⚠️  No storm ID column found. Inferred {df[STORM_COL].nunique()} events "
-          f"from time-gap criterion (>6 h).")
+    print(f"⚠️  No storm ID found. Inferred {df[STORM_COL].nunique()} events.")
 else:
-    print(f"✅ Storm column '{STORM_COL}' — {df[STORM_COL].nunique()} events detected.")
- 
+    print(f"✅ Storm column '{STORM_COL}' — {df[STORM_COL].nunique()} events.")
 
 # %%
-# ── Drop incomplete rows, cast to float32 ───────────────────────────────────
-df_clean = df[FEATURES + [TARGET, STORM_COL]].dropna().copy()
-df_clean[FEATURES + [TARGET]] = df_clean[FEATURES + [TARGET]].astype('float32')
- 
-# ── Chronological storm-level split ─────────────────────────────────────────
-# pandas unique() preserves insertion order → chronological if data is sorted.
-storm_ids = df_clean[STORM_COL].unique()
-n_storms  = len(storm_ids)
+# ── Drop incomplete rows, cast to float32 ────────────────────────────────────
+# Keep optional metadata columns for downstream diagnostics/exports.
+META_CANDIDATES = ["deployment_id", "time", "timestamp", "datetime", "global_storm_id", "storm_start", "storm_end"]
+META_COLS = [c for c in META_CANDIDATES if c in df.columns]
 
-if n_storms < 3:
-    raise ValueError(
-        f"Need at least 3 storms for train/val/test split, found {n_storms}. "
-        "Use a larger dataset or a 2-way split."
-    )
+# Use a set to avoid duplicate column names if STORM_COL is in META_COLS
+all_cols = list(dict.fromkeys(FEATURES + [TARGET, STORM_COL] + META_COLS))
+df_clean = df[all_cols].dropna(
+    subset=FEATURES + [TARGET, STORM_COL]
+).copy()
+df_clean[FEATURES + [TARGET]] = df_clean[FEATURES + [TARGET]].astype('float32')
+
+# ── Chronological non-leaky split ──────────────────────────────────────────
+if 'global_storm_id' in df_clean.columns and 'storm_start' in df_clean.columns:
+    storm_meta = df_clean[['global_storm_id', 'storm_start', 'storm_end']].drop_duplicates()
+    storm_meta = storm_meta.sort_values('storm_start')
+    
+    event_ids = []
+    if not storm_meta.empty:
+        curr_id = 0
+        curr_end = storm_meta.iloc[0]['storm_end']
+        for _, row in storm_meta.iterrows():
+            if row['storm_start'] < curr_end:
+                event_ids.append(curr_id)
+                curr_end = max(curr_end, row['storm_end'])
+            else:
+                curr_id += 1
+                event_ids.append(curr_id)
+                curr_end = row['storm_end']
+        storm_meta['global_event_id'] = event_ids
+        df_clean = df_clean.merge(storm_meta[['global_storm_id', 'global_event_id']], on='global_storm_id', how='left')
+        SPLIT_COL = 'global_event_id'
+    else:
+        SPLIT_COL = STORM_COL
+else:
+    SPLIT_COL = STORM_COL
+
+split_ids = df_clean[SPLIT_COL].unique()
+n_events = len(split_ids)
 
 split_props = np.array(TV_SPLIT, dtype=float)
 split_props = split_props / split_props.sum()
-split_counts = np.floor(split_props * n_storms).astype(int)
+split_counts = np.floor(split_props * n_events).astype(int)
 
-# Ensure each non-zero-proportion split has at least one storm.
 for i, p in enumerate(split_props):
     if p > 0 and split_counts[i] == 0:
         split_counts[i] = 1
 
-# Rebalance counts to sum exactly to n_storms without emptying any split.
-while split_counts.sum() > n_storms:
+while split_counts.sum() > n_events:
     idx = int(np.argmax(split_counts))
     if split_counts[idx] > 1:
         split_counts[idx] -= 1
     else:
         break
-
-while split_counts.sum() < n_storms:
+while split_counts.sum() < n_events:
     idx = int(np.argmax(split_props))
     split_counts[idx] += 1
 
-if split_counts.sum() != n_storms:
-    raise ValueError(
-        "Could not create a non-empty train/val/test storm split with "
-        f"{n_storms} storms and TV_SPLIT={TV_SPLIT}."
-    )
-
-if np.any(split_counts <= 0):
-    raise ValueError(
-        f"Invalid storm split counts {split_counts.tolist()} for {n_storms} storms."
-    )
-
 n_tr, n_va, n_te = split_counts.tolist()
+train_events = split_ids[:n_tr]
+val_events   = split_ids[n_tr : n_tr + n_va]
+test_events  = split_ids[n_tr + n_va :]
+ 
+train_df = df_clean[df_clean[SPLIT_COL].isin(train_events)].copy()
+val_df   = df_clean[df_clean[SPLIT_COL].isin(val_events)].copy()
+test_df  = df_clean[df_clean[SPLIT_COL].isin(test_events)].copy()
+ 
+print(f"\n📊 Chronological Event-Based Split (Non-Leaky):")
+print(f"   Train : {len(train_df):>8,} rows  ({len(train_events):>4} events)")
+print(f"   Val   : {len(val_df):>8,} rows  ({len(val_events):>4} events)")
+print(f"   Test  : {len(test_df):>8,} rows  ({len(test_events):>4} events)")
 
-train_storms = storm_ids[:n_tr]
-val_storms   = storm_ids[n_tr : n_tr + n_va]
-test_storms  = storm_ids[n_tr + n_va : n_tr + n_va + n_te]
- 
-train_df = df_clean[df_clean[STORM_COL].isin(train_storms)].copy()
-val_df   = df_clean[df_clean[STORM_COL].isin(val_storms)].copy()
-test_df  = df_clean[df_clean[STORM_COL].isin(test_storms)].copy()
- 
-print(f"\n📊 Storm-aware partition (no mid-storm cuts):")
-print(f"   Train : {len(train_df):>8,} rows  ({len(train_storms):>4} storms)")
-print(f"   Val   : {len(val_df):>8,} rows  ({len(val_storms):>4} storms)")
-print(f"   Test  : {len(test_df):>8,} rows  ({len(test_storms):>4} storms)")
 
 # %%
 # %%─────────────────────────────────────────────────────────────────────────
@@ -470,15 +475,19 @@ def objective_ann(trial):
         for i in range(0, len(X_tr_gpu), batch_sz):
             idx = perm[i : i + batch_sz]
             opt.zero_grad(set_to_none=True)
-            with autocast(device_type='cuda'):
+            with autocast(device_type=PRIMARY.type):
                 loss = loss_fn(model(X_tr_gpu[idx]), y_tr_gpu[idx])
-            scaler_amp.scale(loss).backward()
-            scaler_amp.step(opt)
-            scaler_amp.update()
+            if scaler_amp:
+                scaler_amp.scale(loss).backward()
+                scaler_amp.step(opt)
+                scaler_amp.update()
+            else:
+                loss.backward()
+                opt.step()
         sched.step()
  
         model.eval()
-        with torch.no_grad(), autocast(device_type='cuda'):
+        with torch.no_grad(), autocast(device_type=PRIMARY.type):
             val_nse = nse(y_val_raw_gpu, descale(model(X_val_gpu)).flatten())
             tr_nse  = nse(torch.tensor(train_df[TARGET].values.astype('float32'), device=PRIMARY),
                           descale(model(X_tr_gpu)).flatten())
@@ -543,13 +552,18 @@ def objective_lstm(trial):
                 bx = Xtw_cpu[idx].to(PRIMARY, non_blocking=True)
                 by = ytw_cpu[idx].to(PRIMARY, non_blocking=True)
                 opt.zero_grad(set_to_none=True)
-                with autocast(device_type='cuda'):
+                with autocast(device_type=PRIMARY.type):
                     loss = loss_fn(model(bx), by)
-                scaler_amp.scale(loss).backward()
-                scaler_amp.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                scaler_amp.step(opt)
-                scaler_amp.update()
+                if scaler_amp:
+                    scaler_amp.scale(loss).backward()
+                    scaler_amp.unscale_(opt)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    scaler_amp.step(opt)
+                    scaler_amp.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    opt.step()
 
             model.eval()
             with torch.no_grad():
@@ -598,9 +612,9 @@ def objective_lstm(trial):
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 8 │ Hyperparameter Search
 # ─────────────────────────────────────────────────────────────────────────────
-N_TRIALS_LR   = 60
-N_TRIALS_ANN  = 60
-N_TRIALS_LSTM = 40
+N_TRIALS_LR   = 10
+N_TRIALS_ANN  = 10
+N_TRIALS_LSTM = 10
  
 # ── Define the database path FIRST ──────────────────────────────────────────
 # ── Define a NEW database path for this dataset variant ──────────────────────
