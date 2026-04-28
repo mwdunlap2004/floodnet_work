@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""Select top precipitation-influenced, non-tidal FloodNet gages."""
+"""
+Select top precipitation-influenced, non-tidal FloodNet gages.
+
+This version is optimized for large datasets by processing sites in parallel.
+"""
 
 from __future__ import annotations
 
 import argparse
+import os
+import traceback
+from functools import partial
+from multiprocessing import Pool
 from pathlib import Path
 
 import duckdb
@@ -13,6 +21,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 def resolve_project_root() -> Path:
+    """Find the project root directory to locate data files consistently."""
     try:
         current_location = Path(__file__).resolve().parent
     except NameError:
@@ -24,6 +33,7 @@ def resolve_project_root() -> Path:
 
 
 def resolve_path(project_root: Path, raw: str) -> Path:
+    """Resolve a relative or absolute path against the project root."""
     p = Path(raw)
     if p.is_absolute():
         return p
@@ -164,6 +174,83 @@ def build_uniform_series(
     return ts
 
 
+def process_site(site_id: str, args: argparse.Namespace) -> dict:
+    """
+    Worker function to analyze a single site for rainfall-influence metrics.
+    Designed to be run in a separate process.
+    """
+    try:
+        # Each process needs its own DB connection and path resolution
+        project_root = resolve_project_root()
+        input_path = resolve_path(project_root, args.input)
+        in_sql = str(input_path).replace("'", "''")
+
+        con = duckdb.connect()
+        fetch_query = f"""
+            SELECT
+                {qid(args.time_col)} AS {qid(args.time_col)},
+                {qid(args.precip_col)} AS {qid(args.precip_col)},
+                {qid(args.flow_col)} AS {qid(args.flow_col)}
+            FROM read_parquet('{in_sql}')
+            WHERE {qid(args.site_col)} = ?
+        """
+        grp = con.execute(fetch_query, [site_id]).df()
+        con.close()
+
+        ts = build_uniform_series(
+            grp,
+            time_col=args.time_col,
+            precip_col=args.precip_col,
+            flow_col=args.flow_col,
+            interval_minutes=args.interval_minutes,
+        )
+
+        n_samples = int(len(ts))
+        if n_samples < max(args.min_overlap_points, 8):
+            return {
+                "site_id": site_id, "usable": False, "n_samples": n_samples,
+                "reason": "too_few_samples", "rb_index": np.nan,
+                "optimal_lag_time": np.nan, "peak_correlation": np.nan, "is_tidal": False,
+                "max_lag_periods": np.nan,
+            }
+
+        flow_series = ts[args.flow_col]
+        precip_series = ts[args.precip_col]
+
+        is_tidal = False
+        if not args.skip_tidal_filter:
+            is_tidal = verify_spectral_non_tidal_status(
+                flow_series, interval_minutes=args.interval_minutes
+            )
+
+        rb_index = calculate_richards_baker_index(flow_series)
+        lag_hours, peak_corr, max_lag_periods = compute_lag_and_cross_correlation(
+            precip_series=precip_series,
+            flow_series=flow_series,
+            max_lag_hours=args.max_lag_hours,
+            interval_minutes=args.interval_minutes,
+            min_overlap_points=args.min_overlap_points,
+        )
+
+        usable = np.isfinite(rb_index) and np.isfinite(lag_hours) and np.isfinite(peak_corr) and (not is_tidal)
+
+        return {
+            "site_id": site_id,
+            "rb_index": rb_index,
+            "optimal_lag_time": lag_hours,
+            "peak_correlation": peak_corr,
+            "is_tidal": bool(is_tidal),
+            "usable": bool(usable),
+            "n_samples": n_samples,
+            "max_lag_periods": max_lag_periods,
+            "reason": "ok" if usable else ("tidal" if is_tidal else "invalid_metrics"),
+        }
+    except Exception:
+        print(f"ERROR: Failed to process site {site_id}. See traceback below.")
+        traceback.print_exc()
+        return {"site_id": site_id, "usable": False, "reason": "processing_error"}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Filter weather-joined data to top precipitation-influenced, non-tidal gages."
@@ -180,7 +267,7 @@ def main() -> None:
     parser.add_argument("--precip-col", default="precip_1hr [inch]", help="Precipitation column.")
     parser.add_argument("--flow-col", default="depth_inches", help="Flow proxy column.")
     parser.add_argument("--skip-tidal-filter", action="store_true", help="Disable FFT tidal screening.")
-    parser.add_argument("--duckdb-threads", type=int, default=4)
+    parser.add_argument("--duckdb-threads", type=int, default=4, help="DuckDB threads and number of parallel workers.")
     args = parser.parse_args()
 
     if args.top_n <= 0:
@@ -201,7 +288,6 @@ def main() -> None:
 
     con = duckdb.connect()
     con.execute(f"SET threads TO {int(args.duckdb_threads)};")
-
     in_sql = str(input_path).replace("'", "''")
 
     schema_df = con.execute(f"SELECT * FROM read_parquet('{in_sql}') LIMIT 0").df()
@@ -218,81 +304,25 @@ def main() -> None:
         ORDER BY 1
     """
     site_ids = [row[0] for row in con.execute(site_query).fetchall()]
-    print(f"Found {len(site_ids)} candidate sites")
+    print(f"Found {len(site_ids)} candidate sites. Starting parallel processing...")
 
+    # --- PARALLEL PROCESSING SECTION ---
+    # Use half the available CPU cores by default, or the specified number.
+    default_workers = max(1, os.cpu_count() // 2)
+    num_workers = min(args.duckdb_threads, default_workers)
+    print(f"Using {num_workers} worker processes.")
+
+    # functools.partial passes the 'args' namespace to each worker call
+    worker_func = partial(process_site, args=args)
+    
     rows = []
-    fetch_query = f"""
-        SELECT
-            {qid(args.time_col)} AS {qid(args.time_col)},
-            {qid(args.precip_col)} AS {qid(args.precip_col)},
-            {qid(args.flow_col)} AS {qid(args.flow_col)}
-        FROM read_parquet('{in_sql}')
-        WHERE {qid(args.site_col)} = ?
-    """
-
-    for idx, site_id in enumerate(site_ids, start=1):
-        if idx % 25 == 0 or idx == len(site_ids):
-            print(f"  Processing site {idx}/{len(site_ids)}")
-
-        grp = con.execute(fetch_query, [site_id]).df()
-        ts = build_uniform_series(
-            grp,
-            time_col=args.time_col,
-            precip_col=args.precip_col,
-            flow_col=args.flow_col,
-            interval_minutes=args.interval_minutes,
-        )
-
-        n_samples = int(len(ts))
-        if n_samples < max(args.min_overlap_points, 8):
-            rows.append(
-                {
-                    "site_id": site_id,
-                    "rb_index": np.nan,
-                    "optimal_lag_time": np.nan,
-                    "peak_correlation": np.nan,
-                    "is_tidal": False,
-                    "usable": False,
-                    "n_samples": n_samples,
-                    "reason": "too_few_samples",
-                }
-            )
-            continue
-
-        flow_series = ts[args.flow_col]
-        precip_series = ts[args.precip_col]
-
-        is_tidal = False
-        if not args.skip_tidal_filter:
-            is_tidal = verify_spectral_non_tidal_status(
-                flow_series,
-                interval_minutes=args.interval_minutes,
-            )
-
-        rb_index = calculate_richards_baker_index(flow_series)
-        lag_hours, peak_corr, max_lag_periods = compute_lag_and_cross_correlation(
-            precip_series=precip_series,
-            flow_series=flow_series,
-            max_lag_hours=args.max_lag_hours,
-            interval_minutes=args.interval_minutes,
-            min_overlap_points=args.min_overlap_points,
-        )
-
-        usable = np.isfinite(rb_index) and np.isfinite(lag_hours) and np.isfinite(peak_corr) and (not is_tidal)
-
-        rows.append(
-            {
-                "site_id": site_id,
-                "rb_index": rb_index,
-                "optimal_lag_time": lag_hours,
-                "peak_correlation": peak_corr,
-                "is_tidal": bool(is_tidal),
-                "usable": bool(usable),
-                "n_samples": n_samples,
-                "max_lag_periods": max_lag_periods,
-                "reason": "ok" if usable else ("tidal" if is_tidal else "invalid_metrics"),
-            }
-        )
+    with Pool(processes=num_workers) as pool:
+        # pool.map distributes the site_ids across the workers and collects results
+        results = pool.map(worker_func, site_ids)
+        rows = list(results)
+    
+    print(f"Finished processing all {len(site_ids)} sites.")
+    # --- END PARALLEL PROCESSING ---
 
     results_df = pd.DataFrame(rows)
     if results_df.empty:
@@ -300,7 +330,9 @@ def main() -> None:
 
     usable_df = results_df[results_df["usable"]].copy()
     if usable_df.empty:
-        raise RuntimeError("No non-tidal usable sites after metric computation.")
+        print("WARNING: No non-tidal usable sites were found after metric computation.")
+        print("The script will exit, but this may indicate an issue with the input data or parameters.")
+        return
 
     scaler = MinMaxScaler()
     usable_df[["normalized_rb", "normalized_corr"]] = scaler.fit_transform(
@@ -349,6 +381,7 @@ def main() -> None:
         ) TO '{out_sql}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
     """
     con.execute(copy_query)
+    con.close()
 
     print("\nSelection complete")
     print(f"Sites evaluated        : {len(results_df)}")
