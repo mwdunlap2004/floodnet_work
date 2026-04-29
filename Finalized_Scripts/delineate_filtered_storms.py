@@ -211,12 +211,12 @@ def main() -> None:
         ),
 
         significant_storms AS (
-            SELECT *
-            FROM storm_metrics
-            WHERE total_precip_in >= 0.02
-                OR peak_intensity_inh >= 0.02
-                OR (net_depth_rise_in >= 0.20 AND COALESCE(total_precip_in, 0) >= 0.02)
-        )
+        SELECT *
+        FROM storm_metrics
+        WHERE total_precip_in >= 0.15
+           OR peak_intensity_inh >= 0.08
+           OR (net_depth_rise_in >= 0.75 AND COALESCE(total_precip_in, 0) >= 0.05)
+    )
 
         SELECT
             a.*,
@@ -265,6 +265,28 @@ def main() -> None:
 
     print("\n📊 Storm Summary:")
     print(summary.to_string(index=False))
+    # ── Pandas Post-Processing: Impute Missing Data ──────────────────────────
+    print("\n🩹 Applying interpolation to recover fragmented storms...")
+    
+    import pandas as pd
+    
+    # Load the file DuckDB just created
+    df = pd.read_parquet(output_path)
+    
+    # Safely interpolate weather variables (limit=12 is 1 hour of 5-min data)
+    weather_cols = ['precip_1hr [inch]', 'precip_max_intensity [inch/hour]', 'temp_2m [degF]']
+    df[weather_cols] = df[weather_cols].interpolate(method='linear', limit=12)
+    
+    # Forward fill soil moisture (limit=288 is 24 hours of 5-min data)
+    soil_col = 'soil_moisture_05cm [m^3/m^3]'
+    if soil_col in df.columns:
+        df[soil_col] = df[soil_col].ffill(limit=288)
+        
+    # Overwrite the parquet file with the imputed data
+    df.to_parquet(output_path, compression='zstd')
+    
+    print(f"✅ Data imputed and saved back to {output_path}")
+    print("   Ready for hpo_search.py and training.py!")
 
 
 if __name__ == "__main__":

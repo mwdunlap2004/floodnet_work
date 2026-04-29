@@ -257,7 +257,7 @@ def main() -> None:
     )
     parser.add_argument("--input", default="Data_Files/floodnet_full_dataset_merged_with_weather.parquet")
     parser.add_argument("--output", default="Data_Files/rain_influenced_sites_raw.parquet")
-    parser.add_argument("--top-n", type=int, default=10)
+    parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument("--max-lag-hours", type=int, default=72)
     parser.add_argument("--interval-minutes", type=int, default=15)
     parser.add_argument("--min-overlap-points", type=int, default=32)

@@ -155,11 +155,12 @@ FIGURES_DIR    = PROJECT_ROOT / "Images_or_plots"
 for d in [CHECKPOINT_DIR, RESULTS_DIR, FIGURES_DIR]:
     d.mkdir(exist_ok=True)
  
+# Configuration and Feature Selection
 FEATURES = [
-    'precip_1hr [inch]',
-    'precip_max_intensity [inch/hour]',
-    'temp_2m [degF]',
-    'soil_moisture_05cm [m^3/m^3]',
+    'precip_1hr [inch]', 
+    'precip_max_intensity [inch/hour]', 
+    'temp_2m [degF]', 
+    # 'soil_moisture_05cm [m^3/m^3]',  <-- REMOVE THIS
     'elevation [feet]'
 ]
 TARGET   = 'depth_inches'

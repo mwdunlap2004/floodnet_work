@@ -48,7 +48,7 @@ FEATURES = [
     'precip_1hr [inch]', 
     'precip_max_intensity [inch/hour]', 
     'temp_2m [degF]', 
-    'soil_moisture_05cm [m^3/m^3]', 
+    # 'soil_moisture_05cm [m^3/m^3]',  <-- REMOVE THIS
     'elevation [feet]'
 ]
 TARGET = 'depth_inches'
