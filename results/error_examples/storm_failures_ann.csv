@@ -1,3 +1,2 @@
-storm_id,deployment_id,mae_ann,peak_obs,peak_pred_ann,n_rows
-5.0,nicely-emerging-escargot,0.02364794,0.511811,0.101585515,494
-6.0,nicely-emerging-escargot,0.0071860505,0.0,0.010003928,482
+global_storm_id,deployment_id,mae_ann,peak_obs,peak_pred_ann,n_rows
+nicely-emerging-escargot_4,nicely-emerging-escargot,0.014002131,0.0,0.1254442,779
