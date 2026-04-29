@@ -229,6 +229,24 @@ Y_STD  = torch.tensor(scaler_y.scale_, device=PRIMARY, dtype=torch.float32)
 def descale(p: torch.Tensor) -> torch.Tensor:
     """Invert standard-scaling on predicted depth."""
     return p * Y_STD + Y_MEAN
+
+
+class WeightedDepthLoss(nn.Module):
+    """Weighted loss: base(yhat, y) * (1 + lambda * depth_true)."""
+    def __init__(self, base: str = "huber", lambda_weight: float = 2.0):
+        super().__init__()
+        self.base = str(base).lower()
+        self.lambda_weight = float(lambda_weight)
+        self.huber = nn.HuberLoss(reduction="none")
+
+    def forward(self, y_pred: torch.Tensor, y_true_scaled: torch.Tensor) -> torch.Tensor:
+        y_true_depth = descale(y_true_scaled)
+        weight = 1.0 + self.lambda_weight * torch.clamp(y_true_depth, min=0.0)
+        if self.base == "mse":
+            base_loss = (y_pred - y_true_scaled) ** 2
+        else:
+            base_loss = self.huber(y_pred, y_true_scaled)
+        return (base_loss * weight).mean()
  
 print(f"✅ Tensors on {PRIMARY}. VRAM used: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 
@@ -425,19 +443,24 @@ def objective_log_reg(trial):
     alpha     = trial.suggest_float("alpha",     1e-6, 20.0, log=True)
     log_shift = trial.suggest_float("log_shift", 1e-4,  1.0, log=True)
     target_transform = trial.suggest_categorical("target_transform", ["log", "plain"])
+    use_weighted_loss = trial.suggest_categorical("use_weighted_loss", [True, False])
+    loss_lambda = trial.suggest_float("loss_lambda", 0.1, 10.0, log=True)
+
+    y_tr_np = train_df[TARGET].values.astype(np.float32)
+    sample_weight = 1.0 + loss_lambda * np.clip(y_tr_np, a_min=0.0, a_max=None)
+    fit_kwargs = {"sample_weight": sample_weight} if use_weighted_loss else {}
 
     if target_transform == "log":
         y_tr_log = np.log(train_df[TARGET] + log_shift)
-        model = Ridge(alpha=alpha).fit(train_df[FEATURES], y_tr_log)
+        model = Ridge(alpha=alpha).fit(train_df[FEATURES], y_tr_log, **fit_kwargs)
         preds_val = np.exp(model.predict(val_df[FEATURES])) - log_shift
         preds_tr = np.exp(model.predict(train_df[FEATURES])) - log_shift
     else:
-        model = Ridge(alpha=alpha).fit(train_df[FEATURES], train_df[TARGET].values)
+        model = Ridge(alpha=alpha).fit(train_df[FEATURES], train_df[TARGET].values, **fit_kwargs)
         preds_val = model.predict(val_df[FEATURES])
         preds_tr = model.predict(train_df[FEATURES])
 
     y_val_np  = val_df[TARGET].values
-    y_tr_np   = train_df[TARGET].values
     denom     = np.sum((y_val_np - y_val_np.mean()) ** 2) + 1e-9
     val_nse = float(1 - np.sum((y_val_np - preds_val) ** 2) / denom)
     trial.set_user_attr("train_nse", float(1 - np.sum((y_tr_np - preds_tr) ** 2) / (np.sum((y_tr_np - y_tr_np.mean()) ** 2) + 1e-9)))
@@ -458,14 +481,17 @@ def objective_ann(trial):
     dropout  = trial.suggest_float("dropout",     0.0, 0.15)
     weight_decay = trial.suggest_float("weight_decay", 1e-8, 1e-4, log=True)
     loss_name = trial.suggest_categorical("loss_fn", ["huber", "mse"])
-    
-    # CRITICAL FIX: Lowered from 262,144 to 32,768 for 11GB VRAM safety
-    batch_sz = 32768   
+    use_weighted_loss = trial.suggest_categorical("use_weighted_loss", [True, False])
+    loss_lambda = trial.suggest_float("loss_lambda", 0.1, 10.0, log=True)
+    batch_sz = trial.suggest_categorical("batch_size", [2048, 4096, 8192, 16384, 32768])
  
     model   = wrap_model(SotaANN(len(FEATURES), h_size, n_layers, dropout))
     opt     = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     sched   = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=40)
-    loss_fn = nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()
+    if use_weighted_loss:
+        loss_fn = WeightedDepthLoss(base=loss_name, lambda_weight=loss_lambda)
+    else:
+        loss_fn = nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()
  
     best_val, patience, wait = float('inf'), 8, 0
  
@@ -528,7 +554,9 @@ def objective_lstm(trial):
     dropout  = trial.suggest_float("dropout",    0.0, 0.15)
     weight_decay = trial.suggest_float("weight_decay", 1e-8, 1e-4, log=True)
     loss_name = trial.suggest_categorical("loss_fn", ["huber", "mse"])
-    batch_sz = 1024
+    use_weighted_loss = trial.suggest_categorical("use_weighted_loss", [True, False])
+    loss_lambda = trial.suggest_float("loss_lambda", 0.1, 10.0, log=True)
+    batch_sz = trial.suggest_categorical("batch_size", [128, 256, 512, 1024, 2048])
 
     Xtw_cpu, ytw_cpu = get_windows('train', window)
     Xvw_cpu, yvw_cpu = get_windows('val',   window)
@@ -538,7 +566,10 @@ def objective_lstm(trial):
 
     model   = wrap_model(SotaAttentionLSTM(len(FEATURES), h_size, n_layers, dropout))
     opt     = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    loss_fn = nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()
+    if use_weighted_loss:
+        loss_fn = WeightedDepthLoss(base=loss_name, lambda_weight=loss_lambda)
+    else:
+        loss_fn = nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()
 
     try:
         best_val_nse = float("-inf")

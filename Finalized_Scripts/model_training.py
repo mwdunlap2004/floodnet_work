@@ -133,6 +133,61 @@ def train_step(model: nn.Module, opt: optim.Optimizer,
         print("   ⚠️  OOM on batch — skipped and cache cleared.")
         return None
 
+
+class WeightedDepthLoss(nn.Module):
+    """
+    Depth-weighted regression loss:
+      base_loss(yhat, y) * (1 + lambda_weight * y_true_depth)
+    The weighting uses inverse-scaled target depth, so wet/peak timesteps
+    contribute more strongly than dry/background timesteps.
+    """
+    def __init__(self, base: str = "huber", lambda_weight: float = 2.0):
+        super().__init__()
+        self.base = str(base).lower()
+        self.lambda_weight = float(lambda_weight)
+        self.huber = nn.HuberLoss(reduction='none')
+
+    def forward(self, y_pred: torch.Tensor, y_true_scaled: torch.Tensor) -> torch.Tensor:
+        y_true_depth = descale(y_true_scaled)
+        weight = 1.0 + self.lambda_weight * torch.clamp(y_true_depth, min=0.0)
+        if self.base == "mse":
+            base_loss = (y_pred - y_true_scaled) ** 2
+        else:
+            base_loss = self.huber(y_pred, y_true_scaled)
+        return (base_loss * weight).mean()
+
+
+def build_loss_fn(params: dict, model_name: str = "model") -> nn.Module:
+    """Builds weighted/unweighted MSE or Huber loss from trial params."""
+    loss_name = str(params.get("loss_fn", "huber")).lower()
+    use_weighted = bool(params.get("use_weighted_loss", True))
+    lambda_w = float(params.get("loss_lambda", 2.0))
+
+    if use_weighted:
+        print(f"   🎯 {model_name}: weighted {loss_name} loss (lambda={lambda_w:.3f})")
+        return WeightedDepthLoss(base=loss_name, lambda_weight=lambda_w)
+
+    print(f"   🎯 {model_name}: unweighted {loss_name} loss")
+    return nn.MSELoss() if loss_name == "mse" else nn.HuberLoss()
+
+
+def resolve_batch_size(model: nn.Module,
+                       sample_input: torch.Tensor,
+                       params: dict,
+                       default_start: int,
+                       default_min: int,
+                       model_name: str = "model") -> int:
+    """
+    Allows explicit batch-size control from Optuna params while preserving
+    OOM-safe probing fallback.
+    """
+    start_bs = int(params.get("batch_size", default_start))
+    min_bs = int(params.get("min_batch_size", default_min))
+    if start_bs < min_bs:
+        start_bs = min_bs
+    print(f"   📦 {model_name}: batch probe start={start_bs:,}, min={min_bs:,}")
+    return safe_batch_size(model, sample_input, starting_batch=start_bs, min_batch=min_bs)
+
 # %%
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 2 │ Paths, Config, and Directory Setup
@@ -593,15 +648,28 @@ for cand in lr_candidates:
     alpha = float(p.get("alpha", 1e-3))
     log_shift = float(p.get("log_shift", 1e-3))
     target_transform = p.get("target_transform", "log")
+    lr_weight_lambda = float(p.get("loss_lambda", 2.0))
+    lr_use_weighted = bool(p.get("use_weighted_loss", True))
+    sample_weight = 1.0 + lr_weight_lambda * np.clip(
+        train_val_df[TARGET].values.astype("float32"), a_min=0.0, a_max=None
+    )
+    fit_kwargs = {"sample_weight": sample_weight} if lr_use_weighted else {}
+    print(
+        f"   🎯 Log-Ridge: {'weighted' if lr_use_weighted else 'unweighted'} fit "
+        f"(lambda={lr_weight_lambda:.3f})"
+    )
 
     if target_transform == "plain":
-        model = Ridge(alpha=alpha).fit(train_val_df[FEATURES], train_val_df[TARGET].values)
+        model = Ridge(alpha=alpha).fit(
+            train_val_df[FEATURES], train_val_df[TARGET].values, **fit_kwargs
+        )
         tr_preds = model.predict(train_val_df[FEATURES])
         te_preds = model.predict(test_df[FEATURES])
     else:
         model = Ridge(alpha=alpha).fit(
             train_val_df[FEATURES],
-            np.log(train_val_df[TARGET] + log_shift)
+            np.log(train_val_df[TARGET] + log_shift),
+            **fit_kwargs
         )
         tr_preds = np.exp(model.predict(train_val_df[FEATURES])) - log_shift
         te_preds = np.exp(model.predict(test_df[FEATURES])) - log_shift
@@ -662,12 +730,15 @@ for cand in ann_candidates:
         len(FEATURES), int(p["hidden_size"]),
         int(p["n_layers"]), float(p["dropout"])
     ))
-    loss_name = p.get("loss_fn", "huber")
-    loss_fn = nn.MSELoss() if loss_name == "mse" else nn.HuberLoss()
+    loss_fn = build_loss_fn(p, model_name="Res-ANN")
     wd = float(p.get("weight_decay", 0.0))
     opt_ann = optim.AdamW(ann_model.parameters(), lr=float(p["lr"]), weight_decay=wd)
     sched_ann = optim.lr_scheduler.CosineAnnealingLR(opt_ann, T_max=EPOCHS_ANN)
-    batch_ann = safe_batch_size(ann_model, X_tv_gpu, starting_batch=32768, min_batch=512)
+    batch_ann = resolve_batch_size(
+        ann_model, X_tv_gpu, p,
+        default_start=32768, default_min=512,
+        model_name="Res-ANN"
+    )
 
     best_stop_nse, wait = float('-inf'), 0
     ann_ckpt = CHECKPOINT_DIR / f"ann_best_trial_{cand['trial_number'] if cand['trial_number'] is not None else 'fallback'}.pt"
@@ -774,14 +845,21 @@ for cand in lstm_candidates:
         len(FEATURES), int(p["hidden_size"]),
         int(p["n_layers"]), float(p["dropout"])
     ))
-    loss_name = p.get("loss_fn", "huber")
-    loss_fn = nn.MSELoss() if loss_name == "mse" else nn.HuberLoss()
+    loss_fn = build_loss_fn(p, model_name="Attn-LSTM")
     wd = float(p.get("weight_decay", 0.0))
     opt_lstm = optim.AdamW(lstm_model.parameters(), lr=float(p["lr"]), weight_decay=wd)
     sched_lstm = optim.lr_scheduler.CosineAnnealingLR(opt_lstm, T_max=EPOCHS_LSTM)
 
     _probe_gpu = X_fit_l[:1].to(PRIMARY)
-    batch_lstm = safe_batch_size(lstm_model, _probe_gpu.expand(2048, -1, -1), starting_batch=2048, min_batch=64)
+    probe_n = max(1, int(p.get("batch_size", 2048)))
+    batch_lstm = resolve_batch_size(
+        lstm_model,
+        _probe_gpu.expand(probe_n, -1, -1),
+        p,
+        default_start=2048,
+        default_min=64,
+        model_name="Attn-LSTM"
+    )
     del _probe_gpu
     torch.cuda.empty_cache()
 
