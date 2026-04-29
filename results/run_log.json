@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-04-28T19:14:00.659453",
+  "timestamp": "2026-04-29T18:48:33.083036",
   "best_params": {
     "log_ridge": {
       "alpha": 0.00020314229909992916,
@@ -26,88 +26,66 @@
   },
   "train_metrics": {
     "NSE": {
-      "Log-Ridge": 0.5605,
-      "Res-ANN": 0.5163,
-      "Attn-LSTM": 0.6951
+      "Log-Ridge": -0.0054,
+      "Res-ANN": -0.0055,
+      "Attn-LSTM": -0.0045
     },
     "KGE": {
-      "Log-Ridge": 0.306,
-      "Res-ANN": 0.2507,
-      "Attn-LSTM": 0.7854
+      "Log-Ridge": -0.6375,
+      "Res-ANN": -0.6615,
+      "Attn-LSTM": -0.6872
     },
     "RMSE": {
-      "Log-Ridge": 0.0417,
-      "Res-ANN": 0.0438,
-      "Attn-LSTM": 0.0381
+      "Log-Ridge": 2.8763,
+      "Res-ANN": 2.8765,
+      "Attn-LSTM": 2.3506
     },
     "PBIAS": {
-      "Log-Ridge": 42.3,
-      "Res-ANN": 46.13,
-      "Attn-LSTM": 4.56
+      "Log-Ridge": 97.63,
+      "Res-ANN": 96.99,
+      "Attn-LSTM": 99.08
     }
   },
   "test_metrics": {
     "NSE": {
-      "Log-Ridge": NaN,
-      "Res-ANN": NaN,
-      "Attn-LSTM": NaN
+      "Log-Ridge": 0.0011,
+      "Res-ANN": -0.0039,
+      "Attn-LSTM": -0.011
     },
     "KGE": {
-      "Log-Ridge": NaN,
-      "Res-ANN": NaN,
-      "Attn-LSTM": NaN
+      "Log-Ridge": -0.3882,
+      "Res-ANN": -0.4311,
+      "Attn-LSTM": -0.6252
     },
     "RMSE": {
-      "Log-Ridge": 0.0175,
-      "Res-ANN": 0.024,
-      "Attn-LSTM": 0.0035
+      "Log-Ridge": 0.0927,
+      "Res-ANN": 0.093,
+      "Attn-LSTM": 0.1007
     },
     "PBIAS": {
-      "Log-Ridge": NaN,
-      "Res-ANN": NaN,
-      "Attn-LSTM": NaN
+      "Log-Ridge": 34.92,
+      "Res-ANN": 38.81,
+      "Attn-LSTM": 87.65
     }
   },
   "overfit_gaps": {
     "Delta_NSE_train_minus_test": {
-      "Log-Ridge": NaN,
-      "Res-ANN": NaN,
-      "Attn-LSTM": NaN
+      "Log-Ridge": -0.006500000000000001,
+      "Res-ANN": -0.0015999999999999999,
+      "Attn-LSTM": 0.0065
     },
     "Delta_KGE_train_minus_test": {
-      "Log-Ridge": NaN,
-      "Res-ANN": NaN,
-      "Attn-LSTM": NaN
-    }
-  },
-  "guardrails": {
-    "top_n_candidates": 3,
-    "val_nse_tolerance": 0.03,
-    "val_kge_tolerance": 0.05,
-    "selected_trials": {
-      "log_ridge": {
-        "trial_number": 234,
-        "val_nse": 0.46163833141326904,
-        "val_kge": 0.11037445492004483
-      },
-      "res_ann": {
-        "trial_number": 238,
-        "val_nse": 0.40912139415740967,
-        "val_kge": -0.2062847895540305
-      },
-      "attn_lstm": {
-        "trial_number": 22,
-        "val_nse": 0.4657468795776367,
-        "val_kge": 0.5303683028633047
-      }
+      "Log-Ridge": -0.24929999999999997,
+      "Res-ANN": -0.2304,
+      "Attn-LSTM": -0.062000000000000055
     }
   },
   "data": {
-    "train_rows": 6711,
-    "val_rows": 726,
-    "test_rows": 779,
-    "train_storms": 13,
-    "val_storms": 1,
-    "test_storms": 1
+    "train_rows": 41790,
+    "val_rows": 5991,
+    "test_rows": 4364,
+    "train_storms": 64,
+    "val_storms": 9,
+    "test_storms": 7
   }
 }

@@ -37,7 +37,7 @@ def main() -> None:
     parser.add_argument("--memory-limit", default="180GB")
     parser.add_argument("--temp-directory", default="./tmp_duckdb")
 
-    # Storm delineation parameters (from updated_method_storm_seperation.ipynb)
+    # Storm delineation parameters
     parser.add_argument("--mit-seconds", type=int, default=21600)
     parser.add_argument("--lead-time-hours", type=int, default=2)
     parser.add_argument("--lag-time-hours", type=int, default=6)
@@ -47,7 +47,7 @@ def main() -> None:
     parser.add_argument(
         "--weather-time-col",
         default='"DATE"',
-        help="Quoted weather timestamp column name for age diagnostics (use 'none' to disable).",
+        help="Quoted weather timestamp column name for age diagnostics.",
     )
     args = parser.parse_args()
 
@@ -72,13 +72,6 @@ def main() -> None:
     print("🚀 Starting Storm Delineation (Merged Windows + Phase Labels)...")
     print(f"   Input : {input_path}")
     print(f"   Output: {output_path}")
-    print(f"   Buffers: -{args.lead_time_hours}h lead | +{args.lag_time_hours}h lag")
-    print(f"   MIT gap: {args.mit_seconds/3600:.1f} hours")
-    print(
-        "   Significant-storm filter: "
-        f">= {args.min_intensity_hits} records with precip_max_intensity >= {args.intensity_threshold_inh} in/hr"
-    )
-    print(f"   Weather time column: {weather_col}")
 
     if weather_col is None:
         weather_age_expr = "NULL::DOUBLE AS minutes_since_weather_update"
@@ -211,12 +204,17 @@ def main() -> None:
         ),
 
         significant_storms AS (
-        SELECT *
-        FROM storm_metrics
-        WHERE total_precip_in >= 0.15
-           OR peak_intensity_inh >= 0.08
-           OR (net_depth_rise_in >= 0.75 AND COALESCE(total_precip_in, 0) >= 0.05)
-    )
+    SELECT *,
+        CASE 
+            WHEN peak_intensity_inh >= 0.5 THEN 'Extreme'
+            WHEN total_precip_in >= 1.0 THEN 'Heavy'
+            ELSE 'Moderate'
+        END as storm_severity
+    FROM storm_metrics
+    WHERE (total_precip_in >= 0.5)
+       OR (peak_intensity_inh >= 0.25)
+       OR (net_depth_rise_in >= 1.5)
+)
 
         SELECT
             a.*,
@@ -237,55 +235,26 @@ def main() -> None:
     con.execute(query)
     print(f"✅ Delineation complete → {output_path}")
 
-    dupes = con.execute(
-        f"""
-        SELECT deployment_id, time, COUNT(*) AS n
-        FROM '{str(output_path)}'
-        GROUP BY deployment_id, time
-        HAVING COUNT(*) > 1
-        ORDER BY n DESC
-        LIMIT 20;
-        """
-    ).df()
-
-    print("\n🔎 Duplicate row check (should be empty):")
-    print(dupes.to_string(index=False) if len(dupes) else "No duplicates found ✅")
-
-    summary = con.execute(
-        f"""
-        SELECT
-            COUNT(DISTINCT deployment_id) AS sensors,
-            COUNT(DISTINCT global_storm_id) AS total_storms,
-            ROUND(AVG(total_precip_in), 3) AS avg_precip_in,
-            ROUND(AVG(storm_duration_hr), 2) AS avg_duration_hr,
-            ROUND(AVG(storm_record_count), 1) AS avg_records_per_storm
-        FROM '{str(output_path)}';
-        """
-    ).df()
-
-    print("\n📊 Storm Summary:")
-    print(summary.to_string(index=False))
-    # ── Pandas Post-Processing: Impute Missing Data ──────────────────────────
-    print("\n🩹 Applying interpolation to recover fragmented storms...")
-    
+    # ── Pandas Post-Processing: Impute Missing Data & Convert Rates ──────────
+    print("\n🩹 Applying interpolation and converting hour rates to 5-min volumes...")
     import pandas as pd
     
-    # Load the file DuckDB just created
     df = pd.read_parquet(output_path)
     
-    # Safely interpolate weather variables (limit=12 is 1 hour of 5-min data)
     weather_cols = ['precip_1hr [inch]', 'precip_max_intensity [inch/hour]', 'temp_2m [degF]']
     df[weather_cols] = df[weather_cols].interpolate(method='linear', limit=12)
     
-    # Forward fill soil moisture (limit=288 is 24 hours of 5-min data)
     soil_col = 'soil_moisture_05cm [m^3/m^3]'
     if soil_col in df.columns:
         df[soil_col] = df[soil_col].ffill(limit=288)
+
+    # Convert hour rates to 5-minute interval volumes for the ML models
+    for col in ['precip_1hr [inch]', 'precip_max_intensity [inch/hour]']:
+        if col in df.columns:
+            df[col] = df[col] / 12.0
         
-    # Overwrite the parquet file with the imputed data
     df.to_parquet(output_path, compression='zstd')
-    
-    print(f"✅ Data imputed and saved back to {output_path}")
+    print(f"✅ Data processed and saved back to {output_path}")
     print("   Ready for hpo_search.py and training.py!")
 
 
