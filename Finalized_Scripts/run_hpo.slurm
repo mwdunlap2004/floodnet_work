@@ -4,8 +4,8 @@
 #SBATCH --error=hpo_%j.err
 #SBATCH --partition=interactive
 #SBATCH --account=ds6050_sp26 
-#SBATCH --gres=gpu:2             
-#SBATCH --cpus-per-task=4        
+#SBATCH --gres=gpu:2         
+#SBATCH --cpus-per-task=8      
 #SBATCH --mem=100G               
 #SBATCH --time=12:00:00          
 
