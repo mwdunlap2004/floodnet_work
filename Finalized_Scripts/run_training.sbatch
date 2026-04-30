@@ -7,7 +7,7 @@
 #SBATCH --account=ds6050_sp26            # Request 2 GPUs
 #SBATCH --cpus-per-task=4        # Request 4 CPU cores
 #SBATCH --mem=200G               # Request 100 GB of RAM
-#SBATCH --time=00:10:00         # Maximum time the job will run
+#SBATCH --time=08:00:00         # Maximum time the job will run
 
 # Navigate to your working directory
 cd /home/upw4ys/Documents/floodnet_work

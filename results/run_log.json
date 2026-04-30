@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-04-29T19:21:07.303788",
+  "timestamp": "2026-04-29T20:34:54.687881",
   "best_params": {
     "log_ridge": {
-      "alpha": 0.00020314229909992916,
-      "log_shift": 0.06238110974489954,
+      "alpha": 0.0003679967347839594,
+      "log_shift": 0.062374181918013354,
       "target_transform": "log"
     },
     "res_ann": {
@@ -15,35 +15,35 @@
       "loss_fn": "huber"
     },
     "attn_lstm": {
-      "window_size": 30,
-      "hidden_size": 128,
-      "n_layers": 3,
-      "lr": 0.000562056055081138,
-      "dropout": 0.017048262732786038,
-      "weight_decay": 3.537362005314277e-05,
+      "window_size": 90,
+      "hidden_size": 96,
+      "n_layers": 2,
+      "lr": 0.0013745751898039456,
+      "dropout": 0.04347479790153596,
+      "weight_decay": 9.406128437620346e-05,
       "loss_fn": "huber"
     }
   },
   "train_metrics": {
     "NSE": {
-      "Log-Ridge": -0.0058,
-      "Res-ANN": 0.0189,
-      "Attn-LSTM": 0.0368
+      "Log-Ridge": -41.3018,
+      "Res-ANN": -0.2433,
+      "Attn-LSTM": -0.0534
     },
     "KGE": {
-      "Log-Ridge": -0.6384,
-      "Res-ANN": -0.3725,
-      "Attn-LSTM": -0.4576
+      "Log-Ridge": -5.8629,
+      "Res-ANN": -4.1389,
+      "Attn-LSTM": 0.2049
     },
     "RMSE": {
-      "Log-Ridge": 2.9565,
-      "Res-ANN": 2.9201,
-      "Attn-LSTM": 2.744
+      "Log-Ridge": 19.1738,
+      "Res-ANN": 3.2872,
+      "Attn-LSTM": 2.4648
     },
     "PBIAS": {
-      "Log-Ridge": 97.95,
-      "Res-ANN": 60.17,
-      "Attn-LSTM": 91.45
+      "Log-Ridge": -404.34,
+      "Res-ANN": 500.78,
+      "Attn-LSTM": 5.2
     }
   },
   "test_metrics": {
@@ -58,14 +58,14 @@
       "Attn-LSTM": NaN
     },
     "RMSE": {
-      "Log-Ridge": 0.0031,
-      "Res-ANN": 0.0643,
-      "Attn-LSTM": 0.0238
+      "Log-Ridge": 0.1229,
+      "Res-ANN": 2.5282,
+      "Attn-LSTM": 0.2866
     },
     "PBIAS": {
       "Log-Ridge": NaN,
       "Res-ANN": NaN,
-      "Attn-LSTM": -144727232.0
+      "Attn-LSTM": 1915933824.0
     }
   },
   "overfit_gaps": {
@@ -86,9 +86,9 @@
     "val_kge_tolerance": 0.05,
     "selected_trials": {
       "log_ridge": {
-        "trial_number": 234,
-        "val_nse": 0.46163833141326904,
-        "val_kge": 0.11037445492004483
+        "trial_number": 191,
+        "val_nse": 0.46165651082992554,
+        "val_kge": 0.11042918392628054
       },
       "res_ann": {
         "trial_number": 224,
@@ -96,9 +96,9 @@
         "val_kge": -2.764648856906234
       },
       "attn_lstm": {
-        "trial_number": 32,
-        "val_nse": 0.4791553020477295,
-        "val_kge": 0.4374381756035044
+        "trial_number": 22,
+        "val_nse": 0.4657468795776367,
+        "val_kge": 0.5303683028633047
       }
     }
   },

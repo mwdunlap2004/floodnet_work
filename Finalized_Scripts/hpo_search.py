@@ -643,9 +643,9 @@ def objective_lstm(trial):
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 8 │ Hyperparameter Search
 # ─────────────────────────────────────────────────────────────────────────────
-N_TRIALS_LR   = 10
-N_TRIALS_ANN  = 10
-N_TRIALS_LSTM = 10
+N_TRIALS_LR   = 50
+N_TRIALS_ANN  = 50
+N_TRIALS_LSTM = 50
  
 # ── Define the database path FIRST ──────────────────────────────────────────
 # ── Define a NEW database path for this dataset variant ──────────────────────
