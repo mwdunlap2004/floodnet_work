@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-04-29T20:34:54.687881",
+  "timestamp": "2026-04-30T01:49:24.521676",
   "best_params": {
     "log_ridge": {
       "alpha": 0.0003679967347839594,
@@ -26,24 +26,24 @@
   },
   "train_metrics": {
     "NSE": {
-      "Log-Ridge": -41.3018,
+      "Log-Ridge": -41.3023,
       "Res-ANN": -0.2433,
-      "Attn-LSTM": -0.0534
+      "Attn-LSTM": -0.3793
     },
     "KGE": {
-      "Log-Ridge": -5.8629,
+      "Log-Ridge": -5.863,
       "Res-ANN": -4.1389,
-      "Attn-LSTM": 0.2049
+      "Attn-LSTM": -2.1607
     },
     "RMSE": {
-      "Log-Ridge": 19.1738,
+      "Log-Ridge": 19.1739,
       "Res-ANN": 3.2872,
-      "Attn-LSTM": 2.4648
+      "Attn-LSTM": 2.8205
     },
     "PBIAS": {
       "Log-Ridge": -404.34,
       "Res-ANN": 500.78,
-      "Attn-LSTM": 5.2
+      "Attn-LSTM": -309.67
     }
   },
   "test_metrics": {
@@ -60,12 +60,12 @@
     "RMSE": {
       "Log-Ridge": 0.1229,
       "Res-ANN": 2.5282,
-      "Attn-LSTM": 0.2866
+      "Attn-LSTM": 0.3323
     },
     "PBIAS": {
       "Log-Ridge": NaN,
       "Res-ANN": NaN,
-      "Attn-LSTM": 1915933824.0
+      "Attn-LSTM": 2226128128.0
     }
   },
   "overfit_gaps": {

@@ -734,11 +734,7 @@ for cand in ann_candidates:
     wd = float(p.get("weight_decay", 0.0))
     opt_ann = optim.AdamW(ann_model.parameters(), lr=float(p["lr"]), weight_decay=wd)
     sched_ann = optim.lr_scheduler.CosineAnnealingLR(opt_ann, T_max=EPOCHS_ANN)
-    batch_ann = resolve_batch_size(
-        ann_model, X_tv_gpu, p,
-        default_start=32768, default_min=512,
-        model_name="Res-ANN"
-    )
+    batch_ann = 512
 
     best_stop_nse, wait = float('-inf'), 0
     ann_ckpt = CHECKPOINT_DIR / f"ann_best_trial_{cand['trial_number'] if cand['trial_number'] is not None else 'fallback'}.pt"
@@ -852,14 +848,7 @@ for cand in lstm_candidates:
 
     _probe_gpu = X_fit_l[:1].to(PRIMARY)
     probe_n = max(1, int(p.get("batch_size", 2048)))
-    batch_lstm = resolve_batch_size(
-        lstm_model,
-        _probe_gpu.expand(probe_n, -1, -1),
-        p,
-        default_start=2048,
-        default_min=64,
-        model_name="Attn-LSTM"
-    )
+    batch_lstm = 64
     del _probe_gpu
     torch.cuda.empty_cache()
 

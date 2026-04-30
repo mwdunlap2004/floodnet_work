@@ -1,5 +1,5 @@
 global_storm_id,deployment_id,mae_ann,peak_obs,peak_pred_ann,n_rows
-tiny_blue_impala_6,tiny_blue_impala,2.6654787,0.0,-1.4977413,666
-tiny_blue_impala_4,tiny_blue_impala,2.5571265,0.0,-1.776408,495
-tiny_blue_impala_11,tiny_blue_impala,2.3090932,0.0,-1.4889468,644
-verbally-novel-marten_1,verbally-novel-marten,1.6442052,0.0,-1.6417418,12
+tiny_blue_impala_6,tiny_blue_impala,2.6654787,0.0,-1.4977415,666
+tiny_blue_impala_4,tiny_blue_impala,2.5571268,0.0,-1.7764068,495
+tiny_blue_impala_11,tiny_blue_impala,2.3090932,0.0,-1.4889457,644
+verbally-novel-marten_1,verbally-novel-marten,1.6442051,0.0,-1.6417419,12
