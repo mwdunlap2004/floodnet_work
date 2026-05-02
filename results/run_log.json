@@ -1,83 +1,91 @@
 {
-  "timestamp": "2026-04-30T01:49:24.521676",
+  "timestamp": "2026-05-02T15:15:18.503226",
   "best_params": {
     "log_ridge": {
-      "alpha": 0.0003679967347839594,
-      "log_shift": 0.062374181918013354,
-      "target_transform": "log"
+      "alpha": 0.000657217385839684,
+      "log_shift": 0.5547217584527511,
+      "target_transform": "plain",
+      "use_weighted_loss": true,
+      "loss_lambda": 0.10007180824289386
     },
     "res_ann": {
-      "hidden_size": 640,
+      "hidden_size": 1024,
       "n_layers": 4,
-      "lr": 9.894923203401596e-05,
-      "dropout": 0.13095992877178175,
-      "weight_decay": 8.854897651711152e-08,
-      "loss_fn": "huber"
+      "lr": 0.0032636862575494137,
+      "dropout": 0.08591149681726862,
+      "weight_decay": 2.595385768513193e-07,
+      "loss_fn": "mse",
+      "use_weighted_loss": false,
+      "loss_lambda": 9.11135537390243,
+      "batch_size": 2048
     },
     "attn_lstm": {
-      "window_size": 90,
-      "hidden_size": 96,
-      "n_layers": 2,
-      "lr": 0.0013745751898039456,
-      "dropout": 0.04347479790153596,
-      "weight_decay": 9.406128437620346e-05,
-      "loss_fn": "huber"
+      "window_size": 30,
+      "hidden_size": 224,
+      "n_layers": 1,
+      "lr": 0.0018460130993645343,
+      "dropout": 0.05476525848002486,
+      "weight_decay": 1.9956575732226166e-05,
+      "loss_fn": "mse",
+      "use_weighted_loss": false,
+      "loss_lambda": 0.8485720881972153,
+      "batch_size": 1024
     }
   },
   "train_metrics": {
     "NSE": {
-      "Log-Ridge": -41.3023,
-      "Res-ANN": -0.2433,
-      "Attn-LSTM": -0.3793
+      "Log-Ridge": 0.2706,
+      "Res-ANN": 0.5092,
+      "Attn-LSTM": 0.4902
     },
     "KGE": {
-      "Log-Ridge": -5.863,
-      "Res-ANN": -4.1389,
-      "Attn-LSTM": -2.1607
+      "Log-Ridge": 0.3232,
+      "Res-ANN": 0.5363,
+      "Attn-LSTM": 0.5789
     },
     "RMSE": {
-      "Log-Ridge": 19.1739,
-      "Res-ANN": 3.2872,
-      "Attn-LSTM": 2.8205
+      "Log-Ridge": 0.3861,
+      "Res-ANN": 0.3167,
+      "Attn-LSTM": 0.3243
     },
     "PBIAS": {
-      "Log-Ridge": -404.34,
-      "Res-ANN": 500.78,
-      "Attn-LSTM": -309.67
+      "Log-Ridge": -3.55,
+      "Res-ANN": -11.07,
+      "Attn-LSTM": 5.01
     }
   },
   "test_metrics": {
     "NSE": {
-      "Log-Ridge": NaN,
-      "Res-ANN": NaN,
-      "Attn-LSTM": NaN
+      "Log-Ridge": 0.0559,
+      "Res-ANN": -0.0757,
+      "Attn-LSTM": -0.0964
     },
     "KGE": {
-      "Log-Ridge": NaN,
-      "Res-ANN": NaN,
-      "Attn-LSTM": NaN
+      "Log-Ridge": -0.0601,
+      "Res-ANN": -0.322,
+      "Attn-LSTM": -0.3235
     },
     "RMSE": {
-      "Log-Ridge": 0.1229,
-      "Res-ANN": 2.5282,
-      "Attn-LSTM": 0.3323
+      "Log-Ridge": 2.1636,
+      "Res-ANN": 2.3095,
+      "Attn-LSTM": 2.3817
     },
     "PBIAS": {
-      "Log-Ridge": NaN,
-      "Res-ANN": NaN,
-      "Attn-LSTM": 2226128128.0
+      "Log-Ridge": 34.49,
+      "Res-ANN": 57.78,
+      "Attn-LSTM": 61.37
     }
   },
   "overfit_gaps": {
     "Delta_NSE_train_minus_test": {
-      "Log-Ridge": NaN,
-      "Res-ANN": NaN,
-      "Attn-LSTM": NaN
+      "Log-Ridge": 0.2147,
+      "Res-ANN": 0.5849,
+      "Attn-LSTM": 0.5866
     },
     "Delta_KGE_train_minus_test": {
-      "Log-Ridge": NaN,
-      "Res-ANN": NaN,
-      "Attn-LSTM": NaN
+      "Log-Ridge": 0.3833,
+      "Res-ANN": 0.8583000000000001,
+      "Attn-LSTM": 0.9024
     }
   },
   "guardrails": {
@@ -86,28 +94,28 @@
     "val_kge_tolerance": 0.05,
     "selected_trials": {
       "log_ridge": {
-        "trial_number": 191,
-        "val_nse": 0.46165651082992554,
-        "val_kge": 0.11042918392628054
+        "trial_number": 195,
+        "val_nse": -0.8185843229293823,
+        "val_kge": -0.2487420109570604
       },
       "res_ann": {
-        "trial_number": 224,
-        "val_nse": 0.4209938645362854,
-        "val_kge": -2.764648856906234
+        "trial_number": 76,
+        "val_nse": 0.434848427772522,
+        "val_kge": 0.4418574042466431
       },
       "attn_lstm": {
-        "trial_number": 22,
-        "val_nse": 0.4657468795776367,
-        "val_kge": 0.5303683028633047
+        "trial_number": 98,
+        "val_nse": 0.4562304615974426,
+        "val_kge": 0.6082932230561727
       }
     }
   },
   "data": {
-    "train_rows": 38217,
-    "val_rows": 7009,
-    "test_rows": 1817,
-    "train_storms": 55,
-    "val_storms": 10,
-    "test_storms": 4
+    "train_rows": 26599,
+    "val_rows": 3952,
+    "test_rows": 3390,
+    "train_storms": 37,
+    "val_storms": 7,
+    "test_storms": 7
   }
 }

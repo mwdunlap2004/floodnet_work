@@ -16,6 +16,7 @@ import gc
 import warnings
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import Ridge
+from sklearn.model_selection import train_test_split  # <-- NEW IMPORT
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import os
@@ -47,9 +48,14 @@ np.random.seed(SEED)
 FEATURES = [
     'precip_1hr [inch]', 
     'precip_max_intensity [inch/hour]', 
+    'precip_incremental [inch]',
+    'total_precip_in',
     'temp_2m [degF]', 
-    # 'soil_moisture_05cm [m^3/m^3]',  <-- REMOVE THIS
-    'elevation [feet]'
+    'relative_humidity [percent]', 
+    'hours_since_storm_start',
+    'storm_duration_hr',
+    'peak_intensity_inh',
+    'intensity_hits_ge_threshold'
 ]
 TARGET = 'depth_inches'
 TV_SPLIT = (0.70, 0.15, 0.15)  # Train / Val / Test proportions
@@ -59,7 +65,7 @@ TV_SPLIT = (0.70, 0.15, 0.15)  # Train / Val / Test proportions
 parser = argparse.ArgumentParser(add_help=True)
 parser.add_argument(
     "--input-file",
-    default="rain_influenced_gages.parquet",
+    default="apparently-darling-gecko.parquet",
     help="Parquet filename under Data_Files/ or absolute path.",
 )
 args, _unknown = parser.parse_known_args()
@@ -128,7 +134,9 @@ df_clean = df[all_cols].dropna(
 ).copy()
 df_clean[FEATURES + [TARGET]] = df_clean[FEATURES + [TARGET]].astype('float32')
 
-# ── Chronological non-leaky split ──────────────────────────────────────────
+# ── Stratified Event-Based Split (Reactivity-Aware) ─────────────────────────
+# We group overlapping storms across sensors into 'global_events' to prevent
+# data leakage.
 if 'global_storm_id' in df_clean.columns and 'storm_start' in df_clean.columns:
     storm_meta = df_clean[['global_storm_id', 'storm_start', 'storm_end']].drop_duplicates()
     storm_meta = storm_meta.sort_values('storm_start')
@@ -153,37 +161,57 @@ if 'global_storm_id' in df_clean.columns and 'storm_start' in df_clean.columns:
 else:
     SPLIT_COL = STORM_COL
 
-split_ids = df_clean[SPLIT_COL].unique()
-n_events = len(split_ids)
+# 1. Aggregate to the Storm Level to calculate Reactivity
+storm_metrics = df_clean.groupby(SPLIT_COL).agg(
+    max_depth=(TARGET, 'max'),
+    total_precip=('total_precip_in', 'max')
+).reset_index()
 
-split_props = np.array(TV_SPLIT, dtype=float)
-split_props = split_props / split_props.sum()
-split_counts = np.floor(split_props * n_events).astype(int)
+# 2. Calculate Reactivity Index (max_depth per inch of rain)
+storm_metrics['reactivity'] = storm_metrics['max_depth'] / (storm_metrics['total_precip'] + 1e-6)
 
-for i, p in enumerate(split_props):
-    if p > 0 and split_counts[i] == 0:
-        split_counts[i] = 1
+# 3. Bin into 3 Classes using quantiles (duplicates='drop' protects against identical zeroes)
+storm_metrics['reactivity_class'] = pd.qcut(
+    storm_metrics['reactivity'], 
+    q=3, 
+    labels=['Low', 'Medium', 'High'], 
+    duplicates='drop'
+)
 
-while split_counts.sum() > n_events:
-    idx = int(np.argmax(split_counts))
-    if split_counts[idx] > 1:
-        split_counts[idx] -= 1
-    else:
-        break
-while split_counts.sum() < n_events:
-    idx = int(np.argmax(split_props))
-    split_counts[idx] += 1
+print("\n🌪️ Storm Reactivity Distribution:")
+print(storm_metrics['reactivity_class'].value_counts())
 
-n_tr, n_va, n_te = split_counts.tolist()
-train_events = split_ids[:n_tr]
-val_events   = split_ids[n_tr : n_tr + n_va]
-test_events  = split_ids[n_tr + n_va :]
- 
+# 4. Perform the Stratified Split
+train_pct, val_pct, test_pct = TV_SPLIT
+
+# Split off the Train set
+train_storms, temp_storms = train_test_split(
+    storm_metrics, 
+    train_size=train_pct, 
+    stratify=storm_metrics['reactivity_class'],
+    random_state=SEED
+)
+
+# Split the remainder into Val and Test
+relative_val_pct = val_pct / (val_pct + test_pct) 
+val_storms, test_storms = train_test_split(
+    temp_storms, 
+    train_size=relative_val_pct, 
+    stratify=temp_storms['reactivity_class'],
+    random_state=SEED
+)
+
+# Extract event arrays
+train_events = train_storms[SPLIT_COL].values
+val_events   = val_storms[SPLIT_COL].values
+test_events  = test_storms[SPLIT_COL].values
+
+# Map splits back to the original row-level dataframe
 train_df = df_clean[df_clean[SPLIT_COL].isin(train_events)].copy()
 val_df   = df_clean[df_clean[SPLIT_COL].isin(val_events)].copy()
 test_df  = df_clean[df_clean[SPLIT_COL].isin(test_events)].copy()
  
-print(f"\n📊 Chronological Event-Based Split (Non-Leaky):")
+print(f"\n📊 Stratified Event-Based Split (Non-Leaky):")
 print(f"   Train : {len(train_df):>8,} rows  ({len(train_events):>4} events)")
 print(f"   Val   : {len(val_df):>8,} rows  ({len(val_events):>4} events)")
 print(f"   Test  : {len(test_df):>8,} rows  ({len(test_events):>4} events)")

@@ -1,5 +1,4 @@
 # %%
-# %%
 # %%─────────────────────────────────────────────────────────────────────────
 # 02_final_training.py
 # FloodNet — Final Model Training Script
@@ -29,6 +28,7 @@ from datetime import datetime
 import argparse
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import Ridge
+from sklearn.model_selection import train_test_split  # <-- NEW IMPORT
 import optuna
 from optuna.samplers import TPESampler
  
@@ -210,13 +210,18 @@ FIGURES_DIR    = PROJECT_ROOT / "Images_or_plots"
 for d in [CHECKPOINT_DIR, RESULTS_DIR, FIGURES_DIR]:
     d.mkdir(exist_ok=True)
  
-# Configuration and Feature Selection
+# Configuration and Clean Feature Selection
 FEATURES = [
     'precip_1hr [inch]', 
     'precip_max_intensity [inch/hour]', 
+    'precip_incremental [inch]',
+    'total_precip_in',
     'temp_2m [degF]', 
-    # 'soil_moisture_05cm [m^3/m^3]',  <-- REMOVE THIS
-    'elevation [feet]'
+    'relative_humidity [percent]', 
+    'hours_since_storm_start',
+    'storm_duration_hr',
+    'peak_intensity_inh',
+    'intensity_hits_ge_threshold'
 ]
 TARGET   = 'depth_inches'
 TV_SPLIT = (0.70, 0.15, 0.15)
@@ -225,7 +230,7 @@ TV_SPLIT = (0.70, 0.15, 0.15)
 parser = argparse.ArgumentParser(add_help=True)
 parser.add_argument(
     "--input-file",
-    default="rain_influenced_gages.parquet",
+    default="apparently-darling-gecko.parquet",  
     help="Parquet filename under Data_Files/ or absolute path.",
 )
 args, _unknown = parser.parse_known_args()
@@ -250,7 +255,6 @@ bp_ann  = study_ann.best_params
 bp_lstm = study_lstm.best_params
  
 # ── Unified best_params dict (used in run_log and checkpoint saves) ───────────
-# FIX: was referenced in Blocks 9/10/11 but never defined, causing NameError.
 best_params = {
     "log_ridge": bp_lr,
     "res_ann":   bp_ann,
@@ -349,7 +353,7 @@ best_params = {
 
 # %%
 # %%─────────────────────────────────────────────────────────────────────────
-# BLOCK 3 │ Data Loading and Storm-Aware Split
+# BLOCK 3 │ Data Loading and Stratified Storm-Aware Split
 # ─────────────────────────────────────────────────────────────────────────────
 input_file = Path(args.input_file)
 file_path = input_file if input_file.is_absolute() else (DATA_DIR / input_file)
@@ -392,9 +396,9 @@ df_clean = df[all_cols].dropna(
 ).copy()
 df_clean[FEATURES + [TARGET]] = df_clean[FEATURES + [TARGET]].astype('float32')
 
-# ── Chronological non-leaky split ──────────────────────────────────────────
+# ── Stratified Event-Based Split (Reactivity-Aware) ─────────────────────────
 # We group overlapping storms across sensors into 'global_events' to prevent
-# data leakage (same storm in both train and test).
+# data leakage.
 if 'global_storm_id' in df_clean.columns and 'storm_start' in df_clean.columns:
     storm_meta = df_clean[['global_storm_id', 'storm_start', 'storm_end']].drop_duplicates()
     storm_meta = storm_meta.sort_values('storm_start')
@@ -412,8 +416,6 @@ if 'global_storm_id' in df_clean.columns and 'storm_start' in df_clean.columns:
                 event_ids.append(curr_id)
                 curr_end = row['storm_end']
         storm_meta['global_event_id'] = event_ids
-        
-        # Map back to df_clean
         df_clean = df_clean.merge(storm_meta[['global_storm_id', 'global_event_id']], on='global_storm_id', how='left')
         SPLIT_COL = 'global_event_id'
     else:
@@ -421,43 +423,62 @@ if 'global_storm_id' in df_clean.columns and 'storm_start' in df_clean.columns:
 else:
     SPLIT_COL = STORM_COL
 
-split_ids = df_clean[SPLIT_COL].unique()
-n_events = len(split_ids)
+# 1. Aggregate to the Storm Level to calculate Reactivity
+storm_metrics = df_clean.groupby(SPLIT_COL).agg(
+    max_depth=(TARGET, 'max'),
+    total_precip=('total_precip_in', 'max')
+).reset_index()
 
-# Robust rebalancing (from hpo_search.py)
-split_props = np.array(TV_SPLIT, dtype=float)
-split_props = split_props / split_props.sum()
-split_counts = np.floor(split_props * n_events).astype(int)
+# 2. Calculate Reactivity Index (max_depth per inch of rain)
+storm_metrics['reactivity'] = storm_metrics['max_depth'] / (storm_metrics['total_precip'] + 1e-6)
 
-for i, p in enumerate(split_props):
-    if p > 0 and split_counts[i] == 0:
-        split_counts[i] = 1
+# 3. Bin into 3 Classes using quantiles (duplicates='drop' protects against identical zeroes)
+storm_metrics['reactivity_class'] = pd.qcut(
+    storm_metrics['reactivity'], 
+    q=3, 
+    labels=['Low', 'Medium', 'High'], 
+    duplicates='drop'
+)
 
-while split_counts.sum() > n_events:
-    idx = int(np.argmax(split_counts))
-    if split_counts[idx] > 1:
-        split_counts[idx] -= 1
-    else:
-        break
-while split_counts.sum() < n_events:
-    idx = int(np.argmax(split_props))
-    split_counts[idx] += 1
+print("\n🌪️ Storm Reactivity Distribution:")
+print(storm_metrics['reactivity_class'].value_counts())
 
-n_tr, n_va, n_te = split_counts.tolist()
-train_events = split_ids[:n_tr]
-val_events   = split_ids[n_tr : n_tr + n_va]
-test_events  = split_ids[n_tr + n_va :]
- 
+# 4. Perform the Stratified Split
+train_pct, val_pct, test_pct = TV_SPLIT
+
+# Split off the Train set
+train_storms, temp_storms = train_test_split(
+    storm_metrics, 
+    train_size=train_pct, 
+    stratify=storm_metrics['reactivity_class'],
+    random_state=SEED
+)
+
+# Split the remainder into Val and Test
+relative_val_pct = val_pct / (val_pct + test_pct) 
+val_storms, test_storms = train_test_split(
+    temp_storms, 
+    train_size=relative_val_pct, 
+    stratify=temp_storms['reactivity_class'],
+    random_state=SEED
+)
+
+# Extract event arrays
+train_events = train_storms[SPLIT_COL].values
+val_events   = val_storms[SPLIT_COL].values
+test_events  = test_storms[SPLIT_COL].values
+
+# Map splits back to the original row-level dataframe
 train_df = df_clean[df_clean[SPLIT_COL].isin(train_events)].copy()
 val_df   = df_clean[df_clean[SPLIT_COL].isin(val_events)].copy()
 test_df  = df_clean[df_clean[SPLIT_COL].isin(test_events)].copy()
 
 # Storm IDs per split (used for run logging and plotting selection)
-train_storms = train_df[STORM_COL].dropna().unique().tolist()
-val_storms   = val_df[STORM_COL].dropna().unique().tolist()
-test_storms  = test_df[STORM_COL].dropna().unique().tolist()
+train_storms_list = train_df[STORM_COL].dropna().unique().tolist()
+val_storms_list   = val_df[STORM_COL].dropna().unique().tolist()
+test_storms_list  = test_df[STORM_COL].dropna().unique().tolist()
  
-print(f"\n📊 Chronological Event-Based Split (Non-Leaky):")
+print(f"\n📊 Stratified Event-Based Split (Non-Leaky):")
 print(f"   Train : {len(train_df):>8,} rows  ({len(train_events):>4} events)")
 print(f"   Val   : {len(val_df):>8,} rows  ({len(val_events):>4} events)")
 print(f"   Test  : {len(test_df):>8,} rows  ({len(test_events):>4} events)")
@@ -570,6 +591,9 @@ class SotaAttentionLSTM(nn.Module):
         self.head = nn.Linear(hidden_size * 2, 1)
  
     def forward(self, x):
+        # FIX: Enforce 3D tensor shape (Batch, Seq Length, Features) to prevent LSTM crash
+        if x.ndim == 2:
+            x = x.unsqueeze(0)
         out, _  = self.lstm(x)
         weights = F.softmax(self.attn(out), dim=1)
         context = torch.sum(out * weights, dim=1)
@@ -739,6 +763,9 @@ for cand in ann_candidates:
     best_stop_nse, wait = float('-inf'), 0
     ann_ckpt = CHECKPOINT_DIR / f"ann_best_trial_{cand['trial_number'] if cand['trial_number'] is not None else 'fallback'}.pt"
 
+    # FIX: Save initial state so torch.load has a file even if patience expires on epoch 0
+    torch.save(ann_model.state_dict(), ann_ckpt)
+
     ann_model.train()
     for epoch in range(EPOCHS_ANN):
         perm = torch.randperm(len(X_fit_gpu), device=PRIMARY)
@@ -751,6 +778,10 @@ for cand in ann_candidates:
         with torch.no_grad(), autocast(device_type='cuda'):
             stop_preds = descale(ann_model(X_stop_gpu)).flatten()
             stop_nse = nse(y_stop_gpu, stop_preds)
+            
+            # FIX: Handle cases where validation size is tiny resulting in NaN NSE
+            if np.isnan(stop_nse):
+                stop_nse = -999.0
 
         if stop_nse > best_stop_nse + 1e-4:
             best_stop_nse = stop_nse
@@ -855,6 +886,9 @@ for cand in lstm_candidates:
     best_stop_nse_l, wait_l = float('-inf'), 0
     lstm_ckpt = CHECKPOINT_DIR / f"lstm_best_trial_{cand['trial_number'] if cand['trial_number'] is not None else 'fallback'}.pt"
 
+    # FIX: Save initial state so torch.load has a file even if patience expires on epoch 0
+    torch.save(lstm_model.state_dict(), lstm_ckpt)
+
     lstm_model.train()
     for epoch in range(EPOCHS_LSTM):
         perm = torch.randperm(len(X_fit_l))
@@ -869,11 +903,19 @@ for cand in lstm_candidates:
         with torch.no_grad():
             all_p = []
             for j in range(0, len(X_stop_l), batch_lstm):
-                all_p.append(lstm_model(X_stop_l[j : j + batch_lstm].to(PRIMARY)))
+                val_batch = X_stop_l[j : j + batch_lstm].to(PRIMARY)
+                # FIX: Ensure 3D shape during validation inference
+                if val_batch.ndim == 2:
+                    val_batch = val_batch.unsqueeze(0)
+                all_p.append(lstm_model(val_batch))
             preds_s = torch.cat(all_p)
             y_stop_d = descale(y_stop_l.to(PRIMARY)).flatten()
             p_stop_d = descale(preds_s).flatten()
             stop_nse_l = nse(y_stop_d, p_stop_d)
+            
+            # FIX: Handle cases where validation size is tiny resulting in NaN NSE
+            if np.isnan(stop_nse_l):
+                stop_nse_l = -999.0
 
         if stop_nse_l > best_stop_nse_l + 1e-4:
             best_stop_nse_l = stop_nse_l
@@ -1027,9 +1069,9 @@ run_log = {
         "train_rows":   int(len(train_df)),
         "val_rows":     int(len(val_df)),
         "test_rows":    int(len(test_df)),
-        "train_storms": int(len(train_storms)),
-        "val_storms":   int(len(val_storms)),
-        "test_storms":  int(len(test_storms)),
+        "train_storms": int(len(train_storms_list)),
+        "val_storms":   int(len(val_storms_list)),
+        "test_storms":  int(len(test_storms_list)),
     },
 }
  
@@ -1126,11 +1168,11 @@ fig = plt.figure(figsize=(18, 16), dpi=150)
 gs  = gridspec.GridSpec(3, 2, figure=fig, hspace=0.48, wspace=0.32)
  
 def pick_display_storm(min_rows=60):
-    for sid in test_storms:
+    for sid in test_storms_list:
         n = (test_df[STORM_COL] == sid).sum()
         if n >= min_rows:
             return sid
-    return test_storms[0]
+    return test_storms_list[0]
  
 focus_sid  = pick_display_storm()
 storm_mask = test_df[STORM_COL].values == focus_sid

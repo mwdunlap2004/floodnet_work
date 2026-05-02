@@ -4,10 +4,10 @@
 #SBATCH --error=hpo_%j.err
 #SBATCH --partition=interactive
 #SBATCH --account=ds6050_sp26 
-#SBATCH --gres=gpu:2         
+#SBATCH --gres=gpu:1        
 #SBATCH --cpus-per-task=8      
 #SBATCH --mem=100G               
-#SBATCH --time=12:00:00          
+#SBATCH --time=1:00:00          
 
 # Navigate to your working directory
 cd /home/upw4ys/Documents/floodnet_work
@@ -16,4 +16,4 @@ cd /home/upw4ys/Documents/floodnet_work
 source .venv/bin/activate 
 
 # Run the hyperparameter optimization script
-python Finalized_Scripts/hpo_search.py --input-file rain_influenced_gages.parquet
+python Finalized_Scripts/hpo_search.py

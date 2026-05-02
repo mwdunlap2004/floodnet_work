@@ -49,6 +49,19 @@ def main() -> None:
         default='"DATE"',
         help="Quoted weather timestamp column name for age diagnostics.",
     )
+    
+    # Safe Drop Argument
+    parser.add_argument(
+        "--drop-cols", 
+        nargs="*", 
+        default=[
+            "soil_moisture_05cm [m^3/m^3]", "soil_moisture_25cm [m^3/m^3]", "soil_moisture_50cm [m^3/m^3]",
+            "frozen_soil_05cm [bit]", "frozen_soil_25cm [bit]", "frozen_soil_50cm [bit]",
+            "soil_temp_05cm [degF]", "soil_temp_25cm [degF]", "soil_temp_50cm [degF]",
+            "snow_depth [inch]"
+        ],
+        help="List of columns to drop from the final dataset."
+    )
     args = parser.parse_args()
 
     project_root = resolve_project_root()
@@ -204,17 +217,17 @@ def main() -> None:
         ),
 
         significant_storms AS (
-    SELECT *,
-        CASE 
-            WHEN peak_intensity_inh >= 0.5 THEN 'Extreme'
-            WHEN total_precip_in >= 1.0 THEN 'Heavy'
-            ELSE 'Moderate'
-        END as storm_severity
-    FROM storm_metrics
-    WHERE (total_precip_in >= 0.5)
-       OR (peak_intensity_inh >= 0.25)
-       OR (net_depth_rise_in >= 1.5)
-)
+            SELECT *,
+                CASE 
+                    WHEN peak_intensity_inh >= 0.5 THEN 'Extreme'
+                    WHEN total_precip_in >= 1.0 THEN 'Heavy'
+                    ELSE 'Moderate'
+                END as storm_severity
+            FROM storm_metrics
+            WHERE (total_precip_in >= 0.5)
+               OR (peak_intensity_inh >= 0.25)
+               OR (net_depth_rise_in >= 1.5)
+        )
 
         SELECT
             a.*,
@@ -235,27 +248,35 @@ def main() -> None:
     con.execute(query)
     print(f"✅ Delineation complete → {output_path}")
 
-    # ── Pandas Post-Processing: Impute Missing Data & Convert Rates ──────────
-    print("\n🩹 Applying interpolation and converting hour rates to 5-min volumes...")
+    # ── Pandas Post-Processing: Impute Missing Data, Drop Cols, & Convert Rates ──────────
+    print("\n🩹 Applying post-processing to target parquet file...")
     import pandas as pd
     
     df = pd.read_parquet(output_path)
     
+    if args.drop_cols:
+        cols_to_drop = [c for c in args.drop_cols if c in df.columns]
+        if cols_to_drop:
+            print(f"   🗑️ Dropping {len(cols_to_drop)} specified columns (e.g., 100% missing data)...")
+            df = df.drop(columns=cols_to_drop)
+
     weather_cols = ['precip_1hr [inch]', 'precip_max_intensity [inch/hour]', 'temp_2m [degF]']
-    df[weather_cols] = df[weather_cols].interpolate(method='linear', limit=12)
+    
+    existing_weather_cols = [c for c in weather_cols if c in df.columns]
+    if existing_weather_cols:
+        df[existing_weather_cols] = df[existing_weather_cols].interpolate(method='linear', limit=12)
     
     soil_col = 'soil_moisture_05cm [m^3/m^3]'
     if soil_col in df.columns:
         df[soil_col] = df[soil_col].ffill(limit=288)
 
-    # Convert hour rates to 5-minute interval volumes for the ML models
     for col in ['precip_1hr [inch]', 'precip_max_intensity [inch/hour]']:
         if col in df.columns:
             df[col] = df[col] / 12.0
         
     df.to_parquet(output_path, compression='zstd')
     print(f"✅ Data processed and saved back to {output_path}")
-    print("   Ready for hpo_search.py and training.py!")
+    print("   Ready for analysis and training!")
 
 
 if __name__ == "__main__":
