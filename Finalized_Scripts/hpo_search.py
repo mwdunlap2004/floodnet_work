@@ -16,7 +16,7 @@ import gc
 import warnings
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import Ridge
-from sklearn.model_selection import train_test_split  # <-- NEW IMPORT
+from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import os
@@ -28,8 +28,6 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # %%
 # ── Multi-GPU Setup ──────────────────────────────────────────────────────────
-# DataParallel splits each mini-batch across available GPUs automatically.
-# PRIMARY is where tensors live; DataParallel handles the rest.
 N_GPUS  = min(torch.cuda.device_count(), 2)
 PRIMARY = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 scaler_amp = GradScaler(device=PRIMARY.type) if torch.cuda.is_available() else None
@@ -60,6 +58,13 @@ FEATURES = [
 TARGET = 'depth_inches'
 TV_SPLIT = (0.70, 0.15, 0.15)  # Train / Val / Test proportions
 
+# ── HPO Objective Settings ────────────────────────────────────────────────────
+# Primary optimisation target is KGE — it balances correlation, variability
+# bias, and mean bias independently, making it harder to game than NSE alone.
+# Trials where |PBIAS| exceeds this threshold are penalised to prevent the
+# optimizer from accepting models with acceptable KGE but dangerous volume bias.
+PBIAS_PRUNE_THRESHOLD = 15.0  # percent — standard hydrological acceptability limit
+
 # %%
 # CLI flags (parse known args to avoid notebook-injected flags)
 parser = argparse.ArgumentParser(add_help=True)
@@ -73,32 +78,26 @@ args, _unknown = parser.parse_known_args()
 # %%
 # 1. Identify the current directory (Handles both .py scripts and Jupyter)
 try:
-    # Use __file__ for standalone scripts
     current_location = Path(__file__).resolve().parent
 except NameError:
-    # Use Current Working Directory for Jupyter/Interactive sessions
     current_location = Path.cwd().resolve()
 
 # 2. Navigate to the actual Project Root
-# If current_location is 'Finalized_Scripts', move to the parent directory
 if current_location.name in ["Finalized_Scripts", "Test_Scripts", "scripts"]:
     PROJECT_ROOT = current_location.parent
 else:
     PROJECT_ROOT = current_location
 
 # 3. Define the absolute path to the data
-# This ensures the path is /floodnet_work/Data_Files/ instead of /Finalized_Scripts/Data_Files/
 data_dir = PROJECT_ROOT / "Data_Files"
 input_file = Path(args.input_file)
 file_path = input_file if input_file.is_absolute() else (data_dir / input_file)
 
 # 4. Safety Check and Data Loading
 if not file_path.exists():
-    # This will print the exact path being searched to help with troubleshooting
     raise FileNotFoundError(f"Target file not found at: {file_path}")
 
 df = pd.read_parquet(file_path)
-
 print(f"Successfully loaded data from: {file_path}")
 
 # %%
@@ -123,11 +122,9 @@ else:
 
 # %%
 # ── Drop incomplete rows, cast to float32 ────────────────────────────────────
-# Keep optional metadata columns for downstream diagnostics/exports.
 META_CANDIDATES = ["deployment_id", "time", "timestamp", "datetime", "global_storm_id", "storm_start", "storm_end"]
 META_COLS = [c for c in META_CANDIDATES if c in df.columns]
 
-# Use a set to avoid duplicate column names if STORM_COL is in META_COLS
 all_cols = list(dict.fromkeys(FEATURES + [TARGET, STORM_COL] + META_COLS))
 df_clean = df[all_cols].dropna(
     subset=FEATURES + [TARGET, STORM_COL]
@@ -135,8 +132,6 @@ df_clean = df[all_cols].dropna(
 df_clean[FEATURES + [TARGET]] = df_clean[FEATURES + [TARGET]].astype('float32')
 
 # ── Stratified Event-Based Split (Reactivity-Aware) ─────────────────────────
-# We group overlapping storms across sensors into 'global_events' to prevent
-# data leakage.
 if 'global_storm_id' in df_clean.columns and 'storm_start' in df_clean.columns:
     storm_meta = df_clean[['global_storm_id', 'storm_start', 'storm_end']].drop_duplicates()
     storm_meta = storm_meta.sort_values('storm_start')
@@ -167,10 +162,10 @@ storm_metrics = df_clean.groupby(SPLIT_COL).agg(
     total_precip=('total_precip_in', 'max')
 ).reset_index()
 
-# 2. Calculate Reactivity Index (max_depth per inch of rain)
+# 2. Calculate Reactivity Index
 storm_metrics['reactivity'] = storm_metrics['max_depth'] / (storm_metrics['total_precip'] + 1e-6)
 
-# 3. Bin into 3 Classes using quantiles (duplicates='drop' protects against identical zeroes)
+# 3. Bin into 3 Classes using quantiles
 storm_metrics['reactivity_class'] = pd.qcut(
     storm_metrics['reactivity'], 
     q=3, 
@@ -184,7 +179,6 @@ print(storm_metrics['reactivity_class'].value_counts())
 # 4. Perform the Stratified Split
 train_pct, val_pct, test_pct = TV_SPLIT
 
-# Split off the Train set
 train_storms, temp_storms = train_test_split(
     storm_metrics, 
     train_size=train_pct, 
@@ -192,7 +186,6 @@ train_storms, temp_storms = train_test_split(
     random_state=SEED
 )
 
-# Split the remainder into Val and Test
 relative_val_pct = val_pct / (val_pct + test_pct) 
 val_storms, test_storms = train_test_split(
     temp_storms, 
@@ -201,12 +194,10 @@ val_storms, test_storms = train_test_split(
     random_state=SEED
 )
 
-# Extract event arrays
 train_events = train_storms[SPLIT_COL].values
 val_events   = val_storms[SPLIT_COL].values
 test_events  = test_storms[SPLIT_COL].values
 
-# Map splits back to the original row-level dataframe
 train_df = df_clean[df_clean[SPLIT_COL].isin(train_events)].copy()
 val_df   = df_clean[df_clean[SPLIT_COL].isin(val_events)].copy()
 test_df  = df_clean[df_clean[SPLIT_COL].isin(test_events)].copy()
@@ -221,9 +212,6 @@ print(f"   Test  : {len(test_df):>8,} rows  ({len(test_events):>4} events)")
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 3 │ Scaling & GPU Tensor Push
 # ─────────────────────────────────────────────────────────────────────────────
-# Scalers fitted ONLY on train to avoid val/test statistics leaking into
-# normalisation — a subtle but real form of data snooping.
- 
 scaler_X = StandardScaler()
 scaler_y = StandardScaler()
  
@@ -237,13 +225,19 @@ y_val = scaler_y.transform(val_df[[TARGET]]).astype('float32')
 # Raw (un-scaled) targets for metric evaluation
 y_val_raw = val_df[TARGET].values.astype('float32')
 y_te_raw  = test_df[TARGET].values.astype('float32')
+
+# Precompute the 90th-percentile depth threshold on the validation set.
+# Used by peak_nse() to isolate model performance during high-depth events,
+# which are the operationally critical timesteps for flood warning.
+VAL_PEAK_THRESHOLD = float(np.percentile(y_val_raw, 90))
+print(f"📈 Val 90th-percentile depth threshold: {VAL_PEAK_THRESHOLD:.4f} inches")
  
 # Storm ID arrays (CPU numpy — used by window builder)
 sid_tr  = train_df[STORM_COL].values
 sid_val = val_df[STORM_COL].values
 sid_te  = test_df[STORM_COL].values
  
-# Push tabular tensors to GPU (ANN & Log-Reg eval)
+# Push tabular tensors to GPU
 X_tr_gpu      = torch.tensor(X_tr,      device=PRIMARY)
 y_tr_gpu      = torch.tensor(y_tr,      device=PRIMARY)
 X_val_gpu     = torch.tensor(X_val,     device=PRIMARY)
@@ -282,21 +276,9 @@ print(f"✅ Tensors on {PRIMARY}. VRAM used: {torch.cuda.memory_allocated() / 1e
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 4 │ LSTM Storm-Safe Window Builder
 # ─────────────────────────────────────────────────────────────────────────────
-# Windows must NOT span storm boundaries. A window bridging the end of one
-# storm and the start of the next would corrupt the temporal context fed to
-# the LSTM with irrelevant inter-event data.
- 
 def build_storm_windows(X: np.ndarray, y: np.ndarray,
                         storm_ids: np.ndarray,
                         window: int):
-    """
-    Returns (X_windows, y_targets) where each row in X_windows is a
-    (window, n_features) sequence drawn from a single storm, and the
-    corresponding y_target is the depth at timestep t+1 after the window.
- 
-    Storms shorter than (window + 1) are skipped — they cannot contribute
-    a full window without contaminating the boundary.
-    """
     Xw, yw = [], []
     for sid in np.unique(storm_ids):
         mask = storm_ids == sid
@@ -325,7 +307,6 @@ def get_windows(split: str, window: int):
             y_te_sc = scaler_y.transform(test_df[[TARGET]]).astype('float32')
             Xw, yw  = build_storm_windows(X_te, y_te_sc, sid_te, window)
         
-        # Store on CPU (default)
         _WINDOW_CACHE[key] = (
             torch.tensor(Xw), 
             torch.tensor(yw),
@@ -354,7 +335,6 @@ class SotaANN(nn.Module):
     """
     Deep residual MLP for tabular flood prediction.
     Input: (B, n_features) → Output: (B, 1) scaled depth.
-    Skip connections stabilise training depth up to 6+ layers.
     """
     def __init__(self, input_size: int, hidden_size: int,
                  n_layers: int = 3, dropout: float = 0.1):
@@ -373,9 +353,6 @@ class SotaAttentionLSTM(nn.Module):
     """
     Bidirectional LSTM + soft attention for sequence-to-scalar flood prediction.
     Input: (B, T, n_features) → Output: (B, 1) scaled depth.
-    Attention weights allow the model to focus on the most hydrologically
-    informative timesteps within each window (e.g., peak intensity).
-    Bidirectionality helps leverage the full intra-storm context.
     """
     def __init__(self, input_size: int, hidden_size: int,
                  n_layers: int = 2, dropout: float = 0.15):
@@ -389,9 +366,9 @@ class SotaAttentionLSTM(nn.Module):
         self.head = nn.Linear(hidden_size * 2, 1)
  
     def forward(self, x):
-        out, _   = self.lstm(x)                          # (B, T, 2H)
-        weights  = F.softmax(self.attn(out), dim=1)      # (B, T, 1)
-        context  = torch.sum(out * weights, dim=1)        # (B, 2H)
+        out, _   = self.lstm(x)
+        weights  = F.softmax(self.attn(out), dim=1)
+        context  = torch.sum(out * weights, dim=1)
         return self.head(self.norm(context))
  
  
@@ -405,12 +382,11 @@ def wrap_model(model: nn.Module) -> nn.Module:
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 6 │ Hydrological Performance Metrics
 # ─────────────────────────────────────────────────────────────────────────────
-# Using the standard hydrological evaluation suite rather than RMSE alone.
  
 def nse(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
     """
     Nash–Sutcliffe Efficiency. NSE = 1 is perfect; NSE < 0 means the mean
-    observed is a better predictor than the model (unacceptable).
+    observed is a better predictor than the model.
     """
     num = torch.sum((y_true - y_pred) ** 2)
     den = torch.sum((y_true - y_true.mean()) ** 2) + 1e-9
@@ -421,7 +397,8 @@ def kge(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """
     Kling–Gupta Efficiency. Decomposes error into correlation (r),
     variability bias (α), and mean bias (β). KGE = 1 is perfect.
-    Preferred over NSE for flood peak assessment.
+    Primary optimisation target: harder to game than NSE because it
+    penalises correlation, variability, and mean bias independently.
     """
     r     = np.corrcoef(y_true, y_pred)[0, 1]
     if np.isnan(r):
@@ -441,6 +418,36 @@ def pbias(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     (dangerous for flood risk); negative = overestimates.
     """
     return float(100 * np.sum(y_true - y_pred) / (np.sum(y_true) + 1e-9))
+
+
+def peak_nse(y_true: np.ndarray, y_pred: np.ndarray,
+             threshold: float) -> float:
+    """
+    NSE computed only on timesteps where observed depth exceeds `threshold`
+    (default: validation 90th percentile). Isolates model skill on the
+    high-depth events that matter most for flood warning. Logged as a
+    user_attr on every trial — not the optimisation target, but a critical
+    diagnostic to detect models that are statistically acceptable overall
+    but fail during the events that actually count.
+    """
+    mask = y_true >= threshold
+    if mask.sum() < 2:
+        return float('nan')
+    yt = torch.tensor(y_true[mask], device=PRIMARY)
+    yp = torch.tensor(y_pred[mask], device=PRIMARY)
+    return nse(yt, yp)
+
+
+def check_pbias_penalty(pb: float) -> float:
+    """
+    Return a KGE penalty if |PBIAS| exceeds the acceptability threshold.
+    Rather than hard-pruning (which wastes the trial's compute), we apply a
+    smooth penalty that drives the optimizer away from biased regions while
+    still recording the trial for diagnostics.
+    Penalty = 0 when |PBIAS| <= threshold; scales linearly beyond it.
+    """
+    excess = max(0.0, abs(pb) - PBIAS_PRUNE_THRESHOLD)
+    return excess * 0.02   # 0.02 KGE penalty per 1% excess bias
  
  
 def eval_metrics(name: str, y_true_np: np.ndarray,
@@ -448,31 +455,33 @@ def eval_metrics(name: str, y_true_np: np.ndarray,
     yt = torch.tensor(y_true_np, device=PRIMARY)
     yp = torch.tensor(y_pred_np, device=PRIMARY)
     return {
-        'Model': name,
-        'NSE':   round(nse(yt, yp), 4),
-        'KGE':   round(kge(y_true_np, y_pred_np), 4),
-        'RMSE':  round(rmse(y_true_np, y_pred_np), 4),
-        'PBIAS': round(pbias(y_true_np, y_pred_np), 2),
+        'Model':    name,
+        'KGE':      round(kge(y_true_np, y_pred_np), 4),
+        'NSE':      round(nse(yt, yp), 4),
+        'RMSE':     round(rmse(y_true_np, y_pred_np), 4),
+        'PBIAS':    round(pbias(y_true_np, y_pred_np), 2),
+        'Peak_NSE': round(peak_nse(y_true_np, y_pred_np, VAL_PEAK_THRESHOLD), 4),
     }
 
 # %%
 # %%─────────────────────────────────────────────────────────────────────────
-# BLOCK 7 │ Optuna Objectives  (Val NSE is the optimisation target)
+# BLOCK 7 │ Optuna Objectives  (Val KGE is the primary optimisation target)
 # ─────────────────────────────────────────────────────────────────────────────
-# All objectives report VAL performance — never test. Test set is untouched
-# until Block 10.
+# All objectives:
+#   • Optimise toward KGE (not NSE) — balances r, α, β independently.
+#   • Apply a smooth PBIAS penalty when |PBIAS| > PBIAS_PRUNE_THRESHOLD.
+#   • Log NSE, RMSE, PBIAS, peak_NSE, and KGE as user_attrs for post-hoc
+#     analysis without losing any trial information.
+#   • Test set is untouched until Block 10.
  
 # ── 7a. Log-Space Ridge Regression (CPU) ────────────────────────────────────
-# Log-transforming the target is hydrologically motivated: flood depths are
-# log-normally distributed; the transform stabilises variance and prevents
-# negative depth predictions.
  
 def objective_log_reg(trial):
-    alpha     = trial.suggest_float("alpha",     1e-6, 20.0, log=True)
-    log_shift = trial.suggest_float("log_shift", 1e-4,  1.0, log=True)
+    alpha            = trial.suggest_float("alpha",            1e-6, 20.0, log=True)
+    log_shift        = trial.suggest_float("log_shift",        1e-4,  1.0, log=True)
     target_transform = trial.suggest_categorical("target_transform", ["log", "plain"])
     use_weighted_loss = trial.suggest_categorical("use_weighted_loss", [True, False])
-    loss_lambda = trial.suggest_float("loss_lambda", 0.1, 10.0, log=True)
+    loss_lambda      = trial.suggest_float("loss_lambda",      0.1,  10.0, log=True)
 
     y_tr_np = train_df[TARGET].values.astype(np.float32)
     sample_weight = 1.0 + loss_lambda * np.clip(y_tr_np, a_min=0.0, a_max=None)
@@ -482,25 +491,36 @@ def objective_log_reg(trial):
         y_tr_log = np.log(train_df[TARGET] + log_shift)
         model = Ridge(alpha=alpha).fit(train_df[FEATURES], y_tr_log, **fit_kwargs)
         preds_val = np.exp(model.predict(val_df[FEATURES])) - log_shift
-        preds_tr = np.exp(model.predict(train_df[FEATURES])) - log_shift
+        preds_tr  = np.exp(model.predict(train_df[FEATURES])) - log_shift
     else:
         model = Ridge(alpha=alpha).fit(train_df[FEATURES], train_df[TARGET].values, **fit_kwargs)
         preds_val = model.predict(val_df[FEATURES])
-        preds_tr = model.predict(train_df[FEATURES])
+        preds_tr  = model.predict(train_df[FEATURES])
 
-    y_val_np  = val_df[TARGET].values
-    denom     = np.sum((y_val_np - y_val_np.mean()) ** 2) + 1e-9
-    val_nse = float(1 - np.sum((y_val_np - preds_val) ** 2) / denom)
-    trial.set_user_attr("train_nse", float(1 - np.sum((y_tr_np - preds_tr) ** 2) / (np.sum((y_tr_np - y_tr_np.mean()) ** 2) + 1e-9)))
-    trial.set_user_attr("val_nse", val_nse)
-    trial.set_user_attr("val_kge", float(kge(y_val_np, preds_val)))
-    return val_nse
+    y_val_np = val_df[TARGET].values
+
+    val_kge   = kge(y_val_np, preds_val)
+    val_pb    = pbias(y_val_np, preds_val)
+    val_nse_v = float(1 - np.sum((y_val_np - preds_val) ** 2) /
+                      (np.sum((y_val_np - y_val_np.mean()) ** 2) + 1e-9))
+    val_rmse  = rmse(y_val_np, preds_val)
+    val_pkn   = peak_nse(y_val_np, preds_val, VAL_PEAK_THRESHOLD)
+    tr_nse    = float(1 - np.sum((y_tr_np - preds_tr) ** 2) /
+                      (np.sum((y_tr_np - y_tr_np.mean()) ** 2) + 1e-9))
+
+    trial.set_user_attr("train_nse",  tr_nse)
+    trial.set_user_attr("val_nse",    val_nse_v)
+    trial.set_user_attr("val_kge",    val_kge)
+    trial.set_user_attr("val_rmse",   val_rmse)
+    trial.set_user_attr("val_pbias",  val_pb)
+    trial.set_user_attr("val_peak_nse", float(val_pkn) if not np.isnan(val_pkn) else -9.0)
+
+    penalty = check_pbias_penalty(val_pb)
+    return val_kge - penalty
  
 
 # %%
 # ── 7b. Residual ANN (GPU, DataParallel) ────────────────────────────────────
-# HuberLoss is more robust than MSE to the large depth spikes during extreme
-# events, which would otherwise dominate the gradient signal.
 
 def objective_ann(trial):
     h_size   = trial.suggest_int("hidden_size",  128, 1024, step=128)
@@ -516,12 +536,17 @@ def objective_ann(trial):
     model   = wrap_model(SotaANN(len(FEATURES), h_size, n_layers, dropout))
     opt     = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     sched   = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=40)
-    if use_weighted_loss:
-        loss_fn = WeightedDepthLoss(base=loss_name, lambda_weight=loss_lambda)
-    else:
-        loss_fn = nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()
+    loss_fn = (WeightedDepthLoss(base=loss_name, lambda_weight=loss_lambda)
+               if use_weighted_loss else
+               (nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()))
  
-    best_val, patience, wait = float('inf'), 8, 0
+    best_val_kge  = float('-inf')
+    best_val_nse  = float('-inf')
+    best_val_rmse = float('inf')
+    best_val_pb   = float('nan')
+    best_val_pkn  = float('nan')
+    best_tr_nse   = float('-inf')
+    patience, wait = 8, 0
  
     for _ in range(40):
         model.train()
@@ -542,27 +567,46 @@ def objective_ann(trial):
  
         model.eval()
         with torch.no_grad(), autocast(device_type=PRIMARY.type):
-            val_nse = nse(y_val_raw_gpu, descale(model(X_val_gpu)).flatten())
-            tr_nse  = nse(torch.tensor(train_df[TARGET].values.astype('float32'), device=PRIMARY),
-                          descale(model(X_tr_gpu)).flatten())
-            val_np_preds = descale(model(X_val_gpu)).detach().cpu().numpy().flatten()
-            val_kge = kge(y_val_raw, val_np_preds)
- 
-        val_loss = -val_nse
-        if val_loss < best_val - 1e-4:
-            best_val, wait = val_loss, 0
+            val_preds_gpu = descale(model(X_val_gpu)).flatten()
+            val_np_preds  = val_preds_gpu.cpu().numpy()
+            tr_preds_gpu  = descale(model(X_tr_gpu)).flatten()
+
+            epoch_kge  = kge(y_val_raw, val_np_preds)
+            epoch_nse  = nse(y_val_raw_gpu, val_preds_gpu)
+            epoch_rmse = rmse(y_val_raw, val_np_preds)
+            epoch_pb   = pbias(y_val_raw, val_np_preds)
+            epoch_pkn  = peak_nse(y_val_raw, val_np_preds, VAL_PEAK_THRESHOLD)
+            epoch_tr_nse = nse(
+                torch.tensor(train_df[TARGET].values.astype('float32'), device=PRIMARY),
+                tr_preds_gpu
+            )
+
+        # Track best by penalised KGE
+        penalised_kge = epoch_kge - check_pbias_penalty(epoch_pb)
+        if penalised_kge > best_val_kge - 1e-4:
+            best_val_kge  = penalised_kge
+            best_val_nse  = epoch_nse
+            best_val_rmse = epoch_rmse
+            best_val_pb   = epoch_pb
+            best_val_pkn  = epoch_pkn
+            best_tr_nse   = epoch_tr_nse
+            wait = 0
         else:
             wait += 1
             if wait >= patience:
                 break
                 
-    # Free memory before the next trial
     del model, opt
     torch.cuda.empty_cache()
-    trial.set_user_attr("train_nse", float(tr_nse))
-    trial.set_user_attr("val_nse", float(-best_val))
-    trial.set_user_attr("val_kge", float(val_kge))
-    return -best_val
+
+    trial.set_user_attr("train_nse",    float(best_tr_nse))
+    trial.set_user_attr("val_nse",      float(best_val_nse))
+    trial.set_user_attr("val_kge",      float(best_val_kge))
+    trial.set_user_attr("val_rmse",     float(best_val_rmse))
+    trial.set_user_attr("val_pbias",    float(best_val_pb))
+    trial.set_user_attr("val_peak_nse", float(best_val_pkn) if not np.isnan(best_val_pkn) else -9.0)
+
+    return best_val_kge  # penalised KGE is the optimisation target
 
 # %%
 def objective_lstm(trial):
@@ -594,15 +638,18 @@ def objective_lstm(trial):
 
     model   = wrap_model(SotaAttentionLSTM(len(FEATURES), h_size, n_layers, dropout))
     opt     = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    if use_weighted_loss:
-        loss_fn = WeightedDepthLoss(base=loss_name, lambda_weight=loss_lambda)
-    else:
-        loss_fn = nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()
+    loss_fn = (WeightedDepthLoss(base=loss_name, lambda_weight=loss_lambda)
+               if use_weighted_loss else
+               (nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()))
 
     try:
-        best_val_nse = float("-inf")
-        best_train_nse = float("-inf")
-        best_val_kge = float("-inf")
+        best_val_kge  = float("-inf")
+        best_val_nse  = float("-inf")
+        best_val_rmse = float("inf")
+        best_val_pb   = float("nan")
+        best_val_pkn  = float("nan")
+        best_tr_nse   = float("-inf")
+
         for epoch in range(25):
             model.train()
             perm = torch.randperm(len(Xtw_cpu))
@@ -631,37 +678,52 @@ def objective_lstm(trial):
                     bxv = Xvw_cpu[j : j + batch_sz].to(PRIMARY)
                     all_p.append(model(bxv))
                 preds_s = torch.cat(all_p)
-                val_nse = nse(
-                    _descale(yvw_cpu.to(PRIMARY)).flatten(),
-                    _descale(preds_s).flatten()
-                )
-                val_pred_np = _descale(preds_s).cpu().numpy().flatten()
+
                 val_true_np = _descale(yvw_cpu.to(PRIMARY)).cpu().numpy().flatten()
-                val_kge = kge(val_true_np, val_pred_np)
+                val_pred_np = _descale(preds_s).cpu().numpy().flatten()
+
+                epoch_kge  = kge(val_true_np, val_pred_np)
+                epoch_nse  = nse(
+                    torch.tensor(val_true_np, device=PRIMARY),
+                    torch.tensor(val_pred_np, device=PRIMARY)
+                )
+                epoch_rmse = rmse(val_true_np, val_pred_np)
+                epoch_pb   = pbias(val_true_np, val_pred_np)
+                epoch_pkn  = peak_nse(val_true_np, val_pred_np, VAL_PEAK_THRESHOLD)
 
                 all_p_tr = []
                 for j in range(0, len(Xtw_cpu), batch_sz):
                     bxt = Xtw_cpu[j : j + batch_sz].to(PRIMARY)
                     all_p_tr.append(model(bxt))
-                tr_preds = torch.cat(all_p_tr)
-                tr_nse = nse(
-                    _descale(ytw_cpu.to(PRIMARY)).flatten(),
-                    _descale(tr_preds).flatten()
+                tr_preds  = torch.cat(all_p_tr)
+                tr_true_np = _descale(ytw_cpu.to(PRIMARY)).cpu().numpy().flatten()
+                tr_pred_np = _descale(tr_preds).cpu().numpy().flatten()
+                epoch_tr_nse = nse(
+                    torch.tensor(tr_true_np, device=PRIMARY),
+                    torch.tensor(tr_pred_np, device=PRIMARY)
                 )
-                if val_nse > best_val_nse:
-                    best_val_nse = val_nse
-                    best_train_nse = tr_nse
-                    best_val_kge = val_kge
 
-        trial.set_user_attr("train_nse", float(best_train_nse))
-        trial.set_user_attr("val_nse", float(best_val_nse))
-        trial.set_user_attr("val_kge", float(best_val_kge))
-        return best_val_nse
+                penalised_kge = epoch_kge - check_pbias_penalty(epoch_pb)
+                if penalised_kge > best_val_kge:
+                    best_val_kge  = penalised_kge
+                    best_val_nse  = epoch_nse
+                    best_val_rmse = epoch_rmse
+                    best_val_pb   = epoch_pb
+                    best_val_pkn  = epoch_pkn
+                    best_tr_nse   = epoch_tr_nse
+
+        trial.set_user_attr("train_nse",    float(best_tr_nse))
+        trial.set_user_attr("val_nse",      float(best_val_nse))
+        trial.set_user_attr("val_kge",      float(best_val_kge))
+        trial.set_user_attr("val_rmse",     float(best_val_rmse))
+        trial.set_user_attr("val_pbias",    float(best_val_pb))
+        trial.set_user_attr("val_peak_nse", float(best_val_pkn) if not np.isnan(best_val_pkn) else -9.0)
+
+        return best_val_kge  # penalised KGE is the optimisation target
 
     except torch.OutOfMemoryError:
-        trial.set_user_attr("train_nse", -1.0)
-        trial.set_user_attr("val_nse", -1.0)
-        trial.set_user_attr("val_kge", -1.0)
+        for attr in ("train_nse", "val_nse", "val_kge", "val_rmse", "val_pbias", "val_peak_nse"):
+            trial.set_user_attr(attr, -1.0)
         return -1.0
     finally:
         del model, opt
@@ -671,12 +733,10 @@ def objective_lstm(trial):
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 8 │ Hyperparameter Search
 # ─────────────────────────────────────────────────────────────────────────────
-N_TRIALS_LR   = 50
-N_TRIALS_ANN  = 50
-N_TRIALS_LSTM = 50
+N_TRIALS_LR   = 1000
+N_TRIALS_ANN  = 1000
+N_TRIALS_LSTM = 1000
  
-# ── Define the database path FIRST ──────────────────────────────────────────
-# ── Define a NEW database path for this dataset variant ──────────────────────
 HPO_DB_NAME = "floodnet_hpo_newfilter.db"
 DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/{HPO_DB_NAME}"
 print(f"Using Optuna DB: {DB}")
@@ -684,7 +744,7 @@ print(f"Using Optuna DB: {DB}")
 print("🔎 [1/3] Log-Ridge baseline …")
 study_lr = optuna.create_study(
     study_name="log_ridge",
-    direction="maximize", 
+    direction="maximize",   # maximise penalised KGE
     sampler=TPESampler(seed=SEED),
     storage=DB,
     load_if_exists=True
@@ -694,7 +754,7 @@ study_lr.optimize(objective_log_reg, n_trials=N_TRIALS_LR)
 print("🔎 [2/3] Residual ANN …")
 study_ann = optuna.create_study(
     study_name="res_ann",
-    direction="maximize", 
+    direction="maximize",   # maximise penalised KGE
     sampler=TPESampler(seed=SEED),
     storage=DB,
     load_if_exists=True
@@ -702,10 +762,9 @@ study_ann = optuna.create_study(
 study_ann.optimize(objective_ann, n_trials=N_TRIALS_ANN)
 
 # %%
-# 1. Force the allocator to be more efficient with fragments
+# ── VRAM Cleanup before LSTM search ──────────────────────────────────────────
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-# 2. Identify and kill every large tensor in the global namespace
 for name in list(globals().keys()):
     if not name.startswith('_'):
         obj = globals()[name]
@@ -713,10 +772,8 @@ for name in list(globals().keys()):
             print(f"🧹 Deleting: {name}")
             del globals()[name]
 
-# 3. Standard garbage collection and cache clear
 gc.collect()
 torch.cuda.empty_cache()
-
 print(f"✅ VRAM Reset. Current Usage: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 
 # %%
@@ -726,7 +783,7 @@ _WINDOW_CACHE = {}
 def get_windows(split: str, window: int):
     """
     Builds or retrieves windowed data from System RAM.
-    This prevents the 5.72 GB 'Megatensor' from crashing the 11GB VRAM.
+    Prevents the large window tensor from exhausting VRAM.
     """
     key = (split, window)
     if key not in _WINDOW_CACHE:
@@ -735,11 +792,9 @@ def get_windows(split: str, window: int):
         elif split == 'val':
             Xw, yw = build_storm_windows(X_val, y_val, sid_val, window)
         else:
-            # For test set evaluation
             y_te_sc = scaler_y.transform(test_df[[TARGET]]).astype('float32')
             Xw, yw  = build_storm_windows(X_te, y_te_sc, sid_te, window)
         
-        # Store as CPU tensors (default)
         _WINDOW_CACHE[key] = (
             torch.tensor(Xw, dtype=torch.float32), 
             torch.tensor(yw, dtype=torch.float32),
@@ -757,17 +812,37 @@ print(f"✅ Y_MEAN={Y_MEAN.item():.4f}, Y_STD={Y_STD.item():.4f} — ready for L
 print("🔎 [3/3] Attention-LSTM …")
 study_lstm = optuna.create_study(
     study_name="attn_lstm",
-    direction="maximize", 
+    direction="maximize",   # maximise penalised KGE
     sampler=TPESampler(seed=SEED),
     storage=DB,
     load_if_exists=True
 )
 study_lstm.optimize(objective_lstm, n_trials=N_TRIALS_LSTM)
  
-print(f"\n{'─'*45}")
-print(f"{'Model':<20} {'Val NSE':>10}")
-print(f"{'─'*45}")
-print(f"{'Log-Ridge':20} {study_lr.best_value:>10.4f}")
-print(f"{'Res-ANN':20} {study_ann.best_value:>10.4f}")
-print(f"{'Attn-LSTM':20} {study_lstm.best_value:>10.4f}")
-print(f"{'─'*45}")
+# ── Summary Table ─────────────────────────────────────────────────────────────
+# best_value is now penalised KGE; raw KGE and other diagnostics are in
+# user_attrs of the best trial for each study.
+def _best_attrs(study):
+    bt = study.best_trial
+    return {
+        'pen_kge':   round(study.best_value, 4),
+        'kge':       round(bt.user_attrs.get('val_kge',      float('nan')), 4),
+        'nse':       round(bt.user_attrs.get('val_nse',      float('nan')), 4),
+        'rmse':      round(bt.user_attrs.get('val_rmse',     float('nan')), 4),
+        'pbias':     round(bt.user_attrs.get('val_pbias',    float('nan')), 2),
+        'peak_nse':  round(bt.user_attrs.get('val_peak_nse', float('nan')), 4),
+    }
+
+lr_a   = _best_attrs(study_lr)
+ann_a  = _best_attrs(study_ann)
+lstm_a = _best_attrs(study_lstm)
+
+print(f"\n{'─'*75}")
+print(f"{'Model':<15} {'PenKGE':>8} {'KGE':>8} {'NSE':>8} {'RMSE':>8} {'PBIAS%':>8} {'PeakNSE':>9}")
+print(f"{'─'*75}")
+for label, a in [('Log-Ridge', lr_a), ('Res-ANN', ann_a), ('Attn-LSTM', lstm_a)]:
+    print(f"{label:<15} {a['pen_kge']:>8.4f} {a['kge']:>8.4f} {a['nse']:>8.4f} "
+          f"{a['rmse']:>8.4f} {a['pbias']:>8.2f} {a['peak_nse']:>9.4f}")
+print(f"{'─'*75}")
+print("Note: PenKGE = KGE − PBIAS penalty (optimisation target). "
+      "KGE is the raw unpenalised score.")
