@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-05-03T12:00:36.337321",
+  "timestamp": "2026-05-04T15:38:45.092605",
   "best_params": {
     "log_ridge": {
       "alpha": 0.00045364080492496116,
@@ -9,93 +9,95 @@
       "loss_lambda": 1.4923941775465197
     },
     "res_ann": {
-      "hidden_size": 768,
+      "hidden_size": 896,
       "n_layers": 2,
-      "lr": 0.00017034256551917517,
-      "dropout": 0.019704635079055063,
-      "weight_decay": 1.0315641857638228e-07,
+      "lr": 0.00017079893789322353,
+      "dropout": 0.1020947818621333,
+      "weight_decay": 2.2732070380544178e-05,
       "loss_fn": "huber",
       "use_weighted_loss": false,
-      "loss_lambda": 0.14068418919711137,
+      "loss_lambda": 6.186040528068269,
+      "underpredict_penalty": 5.2008540982284215,
       "batch_size": 16384
     },
     "attn_lstm": {
       "window_size": 30,
       "hidden_size": 256,
       "n_layers": 3,
-      "lr": 0.0010930244958603818,
-      "dropout": 0.023832735061455994,
-      "weight_decay": 9.449978497302662e-07,
+      "lr": 0.0002519795288834176,
+      "dropout": 0.010514303994947186,
+      "weight_decay": 8.479834006997945e-07,
       "loss_fn": "huber",
       "use_weighted_loss": false,
-      "loss_lambda": 0.15337461338270086,
+      "loss_lambda": 1.639202817298566,
+      "underpredict_penalty": 8.0170758881188,
       "batch_size": 2048
     }
   },
   "train_metrics": {
     "KGE": {
       "Log-Ridge": 0.4419,
-      "Res-ANN": 0.5348,
-      "Attn-LSTM": 0.6899
+      "Res-ANN": 0.5302,
+      "Attn-LSTM": 0.6296
     },
     "NSE": {
       "Log-Ridge": 0.1626,
-      "Res-ANN": 0.2275,
-      "Attn-LSTM": 0.5888
+      "Res-ANN": 0.1229,
+      "Attn-LSTM": 0.5234
     },
     "RMSE": {
       "Log-Ridge": 0.4988,
-      "Res-ANN": 0.479,
-      "Attn-LSTM": 0.3548
+      "Res-ANN": 0.5105,
+      "Attn-LSTM": 0.382
     },
     "PBIAS": {
       "Log-Ridge": 3.54,
-      "Res-ANN": 1.98,
-      "Attn-LSTM": -2.62
+      "Res-ANN": 6.47,
+      "Attn-LSTM": 1.67
     },
     "PeakNSE": {
       "Log-Ridge": -1.1352,
-      "Res-ANN": -0.5224,
-      "Attn-LSTM": -0.1798
+      "Res-ANN": -0.5716,
+      "Attn-LSTM": -0.1554
     }
   },
   "test_metrics": {
     "KGE": {
       "Log-Ridge": -0.0246,
-      "Res-ANN": 0.0772,
-      "Attn-LSTM": -0.0477
+      "Res-ANN": 0.0323,
+      "Attn-LSTM": 0.0699
     },
     "NSE": {
       "Log-Ridge": 0.1502,
-      "Res-ANN": 0.1806,
-      "Attn-LSTM": 0.0843
+      "Res-ANN": 0.1273,
+      "Attn-LSTM": 0.1796
     },
     "RMSE": {
       "Log-Ridge": 1.3014,
-      "Res-ANN": 1.2779,
-      "Attn-LSTM": 1.3695
+      "Res-ANN": 1.3188,
+      "Attn-LSTM": 1.2963
     },
     "PBIAS": {
       "Log-Ridge": 55.83,
-      "Res-ANN": 30.07,
-      "Attn-LSTM": 45.18
+      "Res-ANN": 40.55,
+      "Attn-LSTM": 32.11
     },
     "PeakNSE": {
       "Log-Ridge": -0.4895,
-      "Res-ANN": -0.4044,
-      "Attn-LSTM": -0.5499
+      "Res-ANN": -0.4663,
+      "Attn-LSTM": -0.4105
     }
   },
   "overfit_gaps": {
     "Delta_KGE_tr_test": {
       "Log-Ridge": 0.4665,
-      "Res-ANN": 0.45760000000000006,
-      "Attn-LSTM": 0.7375999999999999
+      "Res-ANN": 0.4979,
+      "Attn-LSTM": 0.5597000000000001
     },
     "Delta_NSE_tr_test": {
       "Log-Ridge": 0.012399999999999994,
-      "Res-ANN": 0.0469,
-      "Attn-LSTM": 0.5045
+      "Res-ANN": -0.004400000000000001,
+      "Attn-LSTM": 0.3438
     }
   },
   "guardrails": {
@@ -110,14 +112,14 @@
         "val_pbias": -4.493529319763184
       },
       "res_ann": {
-        "trial_number": 133,
-        "val_kge": 0.8232481083125895,
-        "val_pbias": 4.94797420501709
+        "trial_number": 562,
+        "val_kge": 0.838515809502514,
+        "val_pbias": -1.2888258695602417
       },
       "attn_lstm": {
-        "trial_number": 652,
-        "val_kge": 0.7676166224971268,
-        "val_pbias": -1.7191133499145508
+        "trial_number": 179,
+        "val_kge": 0.7641983651795412,
+        "val_pbias": 0.315100759267807
       }
     }
   }
