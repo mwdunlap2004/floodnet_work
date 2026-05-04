@@ -252,23 +252,36 @@ def descale(p: torch.Tensor) -> torch.Tensor:
     """Invert standard-scaling on predicted depth."""
     return p * Y_STD + Y_MEAN
 
-
-class WeightedDepthLoss(nn.Module):
-    """Weighted loss: base(yhat, y) * (1 + lambda * depth_true)."""
-    def __init__(self, base: str = "huber", lambda_weight: float = 2.0):
+class AsymmetricWeightedDepthLoss(nn.Module):
+    """
+    Depth-weighted AND Asymmetric regression loss.
+    1. Depth-weighted: High-depth events are penalized more than shallow events.
+    2. Asymmetric: Under-predictions (dangerous) are heavily penalized 
+       compared to over-predictions (false alarms).
+    """
+    def __init__(self, base: str = "huber", lambda_weight: float = 2.0, underpredict_penalty: float = 4.0):
         super().__init__()
         self.base = str(base).lower()
         self.lambda_weight = float(lambda_weight)
-        self.huber = nn.HuberLoss(reduction="none")
+        self.underpredict_penalty = float(underpredict_penalty) 
+        self.huber = nn.HuberLoss(reduction='none')
 
     def forward(self, y_pred: torch.Tensor, y_true_scaled: torch.Tensor) -> torch.Tensor:
-        y_true_depth = descale(y_true_scaled)
-        weight = 1.0 + self.lambda_weight * torch.clamp(y_true_depth, min=0.0)
         if self.base == "mse":
             base_loss = (y_pred - y_true_scaled) ** 2
         else:
             base_loss = self.huber(y_pred, y_true_scaled)
-        return (base_loss * weight).mean()
+            
+        y_true_depth = descale(y_true_scaled)
+        depth_weight = 1.0 + self.lambda_weight * torch.clamp(y_true_depth, min=0.0)
+        
+        asymmetry_weight = torch.where(
+            y_pred < y_true_scaled, 
+            self.underpredict_penalty, 
+            1.0
+        )
+        
+        return (base_loss * depth_weight * asymmetry_weight).mean()
  
 print(f"✅ Tensors on {PRIMARY}. VRAM used: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 
@@ -531,12 +544,13 @@ def objective_ann(trial):
     loss_name = trial.suggest_categorical("loss_fn", ["huber", "mse"])
     use_weighted_loss = trial.suggest_categorical("use_weighted_loss", [True, False])
     loss_lambda = trial.suggest_float("loss_lambda", 0.1, 10.0, log=True)
+    underpredict_penalty = trial.suggest_float("underpredict_penalty", 1.0, 10.0)
     batch_sz = trial.suggest_categorical("batch_size", [2048, 4096, 8192, 16384, 32768])
  
     model   = wrap_model(SotaANN(len(FEATURES), h_size, n_layers, dropout))
     opt     = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     sched   = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=40)
-    loss_fn = (WeightedDepthLoss(base=loss_name, lambda_weight=loss_lambda)
+    loss_fn = (AsymmetricWeightedDepthLoss(base=loss_name, lambda_weight=loss_lambda, underpredict_penalty=underpredict_penalty)
                if use_weighted_loss else
                (nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()))
  
@@ -628,6 +642,7 @@ def objective_lstm(trial):
     loss_name = trial.suggest_categorical("loss_fn", ["huber", "mse"])
     use_weighted_loss = trial.suggest_categorical("use_weighted_loss", [True, False])
     loss_lambda = trial.suggest_float("loss_lambda", 0.1, 10.0, log=True)
+    underpredict_penalty = trial.suggest_float("underpredict_penalty", 1.0, 10.0)
     batch_sz = trial.suggest_categorical("batch_size", [128, 256, 512, 1024, 2048])
 
     Xtw_cpu, ytw_cpu = get_windows('train', window)
@@ -638,7 +653,7 @@ def objective_lstm(trial):
 
     model   = wrap_model(SotaAttentionLSTM(len(FEATURES), h_size, n_layers, dropout))
     opt     = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    loss_fn = (WeightedDepthLoss(base=loss_name, lambda_weight=loss_lambda)
+    loss_fn = (AsymmetricWeightedDepthLoss(base=loss_name, lambda_weight=loss_lambda, underpredict_penalty=underpredict_penalty)
                if use_weighted_loss else
                (nn.HuberLoss() if loss_name == "huber" else nn.MSELoss()))
 

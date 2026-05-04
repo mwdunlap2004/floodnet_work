@@ -2,9 +2,9 @@
 #SBATCH --job-name=flood_hpo
 #SBATCH --output=hpo_%j.out
 #SBATCH --error=hpo_%j.err
-#SBATCH --partition=interactive
+#SBATCH --partition=gpu
 #SBATCH --account=ds6050_sp26 
-#SBATCH --gres=gpu:2     
+#SBATCH --gres=gpu:1     
 #SBATCH --cpus-per-task=8      
 #SBATCH --mem=100G               
 #SBATCH --time=12:00:00          

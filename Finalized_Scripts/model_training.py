@@ -112,29 +112,50 @@ def train_step(model: nn.Module, opt: optim.Optimizer,
         print("   ⚠️  OOM on batch — skipped and cache cleared.")
         return None
 
-class WeightedDepthLoss(nn.Module):
-    def __init__(self, base: str = "huber", lambda_weight: float = 2.0):
+class AsymmetricWeightedDepthLoss(nn.Module):
+    """
+    Depth-weighted AND Asymmetric regression loss.
+    1. Depth-weighted: High-depth events are penalized more than shallow events.
+    2. Asymmetric: Under-predictions (dangerous) are heavily penalized 
+       compared to over-predictions (false alarms).
+    """
+    def __init__(self, base: str = "huber", lambda_weight: float = 2.0, underpredict_penalty: float = 4.0):
         super().__init__()
         self.base = str(base).lower()
         self.lambda_weight = float(lambda_weight)
+        self.underpredict_penalty = float(underpredict_penalty) 
         self.huber = nn.HuberLoss(reduction='none')
 
     def forward(self, y_pred: torch.Tensor, y_true_scaled: torch.Tensor) -> torch.Tensor:
-        y_true_depth = descale(y_true_scaled)
-        weight = 1.0 + self.lambda_weight * torch.clamp(y_true_depth, min=0.0)
         if self.base == "mse":
             base_loss = (y_pred - y_true_scaled) ** 2
         else:
             base_loss = self.huber(y_pred, y_true_scaled)
-        return (base_loss * weight).mean()
+            
+        y_true_depth = descale(y_true_scaled)
+        depth_weight = 1.0 + self.lambda_weight * torch.clamp(y_true_depth, min=0.0)
+        
+        asymmetry_weight = torch.where(
+            y_pred < y_true_scaled, 
+            self.underpredict_penalty, 
+            1.0
+        )
+        
+        return (base_loss * depth_weight * asymmetry_weight).mean()
 
 def build_loss_fn(params: dict, model_name: str = "model") -> nn.Module:
     loss_name = str(params.get("loss_fn", "huber")).lower()
     use_weighted = bool(params.get("use_weighted_loss", True))
     lambda_w = float(params.get("loss_lambda", 2.0))
+    penalty = float(params.get("underpredict_penalty", 4.0))
+    
     if use_weighted:
-        print(f"   🎯 {model_name}: weighted {loss_name} loss (lambda={lambda_w:.3f})")
-        return WeightedDepthLoss(base=loss_name, lambda_weight=lambda_w)
+        print(f"   🎯 {model_name}: Asymmetric {loss_name} (depth_lambda={lambda_w:.2f}, under-predict penalty={penalty}x)")
+        return AsymmetricWeightedDepthLoss(
+            base=loss_name, 
+            lambda_weight=lambda_w,
+            underpredict_penalty=penalty
+        )
     print(f"   🎯 {model_name}: unweighted {loss_name} loss")
     return nn.MSELoss() if loss_name == "mse" else nn.HuberLoss()
 
