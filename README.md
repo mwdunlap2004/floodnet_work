@@ -5,6 +5,7 @@ Hydroinformatics workflows for NYC FloodNet sensor data, including:
 - dataset joining and spatial weather enrichment
 - storm delineation and event-level EDA
 - rain-influenced gage selection for modeling
+- single-gage focused modeling on `apparently-darling-gecko`
 - flood-duration analysis and model training
 
 ## Project Structure
@@ -65,6 +66,7 @@ Primary shared data location:
 | `floodnet_floods_only.parquet` | `Finalized_Scripts/joining_parquets.ipynb` | `Finalized_Scripts/flood_duration.ipynb` |
 | `floodnet_full_dataset_merged_with_weather.parquet` | `Finalized_Scripts/spatial_join.ipynb` | `Finalized_Scripts/select_precip_influenced_gages.py` |
 | `rain_influenced_sites_raw.parquet` | `Finalized_Scripts/select_precip_influenced_gages.py` | `Finalized_Scripts/delineate_filtered_storms.py` |
+| `apparently-darling-gecko.parquet` | `Finalized_Scripts/apparently_darling_gecko.py` | `Finalized_Scripts/hpo_search.py`, `Finalized_Scripts/model_training.py` |
 | `rain_influenced_gages.parquet` | `Finalized_Scripts/delineate_filtered_storms.py` | `Finalized_Scripts/rain_influenced_EDA.ipynb`, `Finalized_Scripts/hpo_search.py`, `Finalized_Scripts/model_training.py` |
 | `delineated_storms.parquet` | `Finalized_Scripts/updated_method_storm_seperation.ipynb` | `Finalized_Scripts/floodnet_eda.ipynb` |
 | `floodnet_hpo_newfilter.db` | `Finalized_Scripts/hpo_search.py` | `Finalized_Scripts/model_training.py` |
@@ -78,12 +80,38 @@ Use this order for a clean, reproducible workflow:
 3. `Finalized_Scripts/spatial_join.ipynb`
 4. `Finalized_Scripts/select_precip_influenced_gages.py` (top-10 gages, 30-day tidal gate; creates `Data_Files/rain_influenced_sites_raw.parquet`)
 5. `Finalized_Scripts/delineate_filtered_storms.py` (creates final training input `Data_Files/rain_influenced_gages.parquet`)
-6. `Finalized_Scripts/rain_influenced_EDA.ipynb` (rain-coupling diagnostics for selected/delineated gages)
-7. `Finalized_Scripts/hpo_search.py` (default input: `rain_influenced_gages.parquet`)
-8. `Finalized_Scripts/model_training.py` (default input: `rain_influenced_gages.parquet`)
-9. Optional full-network analysis notebooks: `Finalized_Scripts/updated_method_storm_seperation.ipynb`, `Finalized_Scripts/floodnet_eda.ipynb`, `Finalized_Scripts/flood_duration.ipynb`, `Finalized_Scripts/finalized_lstm_modeling.ipynb`
+6. `Finalized_Scripts/apparently_darling_gecko.py` (isolates the single modeling gage and creates `Data_Files/apparently-darling-gecko.parquet`)
+7. `Finalized_Scripts/rain_influenced_EDA.ipynb` (rain-coupling diagnostics for selected/delineated gages)
+8. `Finalized_Scripts/hpo_search.py` (default input: `apparently-darling-gecko.parquet`)
+9. `Finalized_Scripts/model_training.py` (default input: `apparently-darling-gecko.parquet`)
+10. Optional full-network analysis notebooks: `Finalized_Scripts/updated_method_storm_seperation.ipynb`, `Finalized_Scripts/floodnet_eda.ipynb`, `Finalized_Scripts/flood_duration.ipynb`, `Finalized_Scripts/finalized_lstm_modeling.ipynb`
 
-## 5. SLURM Submission
+## 5. Modeling Scope: Why One Gage
+
+For final model development, the workflow uses one high-reliability FloodNet deployment: `apparently-darling-gecko` (written as `apparently_darling_gecko` in text and `apparently-darling-gecko` in file/script IDs).  
+`Finalized_Scripts/apparently_darling_gecko.py` filters storm records to that deployment and writes `Data_Files/apparently-darling-gecko.parquet`, which is the default training input used by both `hpo_search.py` and `model_training.py`.
+
+## 6. Verified Metrics (Accuracy Check)
+
+The current checked metrics are from `results/run_log.json` with timestamp `2026-05-03T12:00:36.337321`.
+
+Test-set skill scores:
+
+| Model | KGE | NSE | RMSE (in) | PBIAS (%) | PeakNSE |
+|---|---:|---:|---:|---:|---:|
+| Log-Ridge | -0.0246 | 0.1502 | 1.3014 | 55.83 | -0.4895 |
+| Res-ANN | 0.0772 | 0.1806 | 1.2779 | 30.07 | -0.4044 |
+| Attn-LSTM | -0.0477 | 0.0843 | 1.3695 | 45.18 | -0.5499 |
+
+Train-set skill scores:
+
+| Model | KGE | NSE | RMSE (in) | PBIAS (%) | PeakNSE |
+|---|---:|---:|---:|---:|---:|
+| Log-Ridge | 0.4419 | 0.1626 | 0.4988 | 3.54 | -1.1352 |
+| Res-ANN | 0.5348 | 0.2275 | 0.4790 | 1.98 | -0.5224 |
+| Attn-LSTM | 0.6899 | 0.5888 | 0.3548 | -2.62 | -0.1798 |
+
+## 7. SLURM Submission
 
 - Unified job script:
   - `Finalized_Scripts/run_rain_influenced.sbatch`
@@ -99,14 +127,14 @@ sbatch --export=STEP=all Finalized_Scripts/run_rain_influenced.sbatch
 - Legacy scripts are also aligned to the new input file:
   - `Finalized_Scripts/run_hpo.slurm`
   - `Finalized_Scripts/run_training.sbatch`
-## 6. Outputs
+## 8. Outputs
 
 - `Images_or_plots/`: static figures (for example model comparison and duration plots)
 - `results/`: model run artifacts/logs
 - `results/presentation_figures/`: exported presentation figures from `floodnet_eda.ipynb`
 - `checkpoints/`: trained model checkpoints and scalers from training scripts
 
-## 7. Optional R Dependencies
+## 9. Optional R Dependencies
 
 If you plan to run `.R` scripts in `Test_Scripts/`:
 
