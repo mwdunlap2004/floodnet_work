@@ -34,7 +34,7 @@ def main() -> None:
     # Target Gage Argument
     parser.add_argument("--target-gage", default="apparently-darling-gecko", help="The specific sensor to isolate.")
     
-    parser.add_argument("--input", default="Data_Files/rain_influenced_sites_raw.parquet")
+    parser.add_argument("--input", default="Data_Files/floodnet_full_dataset_merged_with_weather.parquet")
     parser.add_argument("--output", default="Data_Files/apparently-darling-gecko.parquet")
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--memory-limit", default="180GB")
