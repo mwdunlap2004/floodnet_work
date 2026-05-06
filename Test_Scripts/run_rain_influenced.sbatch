@@ -12,11 +12,11 @@
 set -euo pipefail
 
 # Usage:
-#   sbatch Finalized_Scripts/run_rain_influenced.sbatch                  # defaults to "both"
-#   sbatch --export=STEP=hpo Finalized_Scripts/run_rain_influenced.sbatch
-#   sbatch --export=STEP=train Finalized_Scripts/run_rain_influenced.sbatch
-#   sbatch --export=STEP=both Finalized_Scripts/run_rain_influenced.sbatch
-#   sbatch --export=STEP=all  Finalized_Scripts/run_rain_influenced.sbatch
+#   sbatch Test_Scripts/run_rain_influenced.sbatch                  # defaults to "both"
+#   sbatch --export=STEP=hpo Test_Scripts/run_rain_influenced.sbatch
+#   sbatch --export=STEP=train Test_Scripts/run_rain_influenced.sbatch
+#   sbatch --export=STEP=both Test_Scripts/run_rain_influenced.sbatch
+#   sbatch --export=STEP=all  Test_Scripts/run_rain_influenced.sbatch
 #
 # Optional overrides:
 #   --export=PROJECT_ROOT=/home/upw4ys/Documents/floodnet_work
