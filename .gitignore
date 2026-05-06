@@ -23,3 +23,5 @@ Finalized_Scripts/__pycache__/delineate_filtered_storms.cpython-312.pyc
 Finalized_Scripts/__pycache__/select_precip_influenced_gages.cpython-312.pyc
 Finalized_Scripts/__pycache__/delineate_filtered_storms.cpython-313.pyc
 Finalized_Scripts/temp_chunks/*
+temp_chunks/*
+Finalized_Scripts/__pycache__/*
