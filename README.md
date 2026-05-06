@@ -6,7 +6,7 @@ Hydroinformatics workflows for NYC FloodNet sensor data, including:
 - storm delineation and event-level EDA
 - rain-influenced gage selection for modeling
 - single-gage focused modeling on `apparently-darling-gecko`
-- flood-duration analysis and model training
+- model training and evaluation
 
 ## Project Structure
 
@@ -62,29 +62,34 @@ Primary shared data location:
 | File | Produced By | Used By |
 |---|---|---|
 | `floodnet_parquet_data/*.parquet` | `Finalized_Scripts/parquet_floodnet_download.py` | `Finalized_Scripts/joining_parquets.ipynb` |
-| `floodnet_full_dataset_merged.parquet` | `Finalized_Scripts/joining_parquets.ipynb` | intermediate checks |
-| `floodnet_floods_only.parquet` | `Finalized_Scripts/joining_parquets.ipynb` | `Finalized_Scripts/flood_duration.ipynb` |
+| `nyc_precipitation_master.parquet` | `Finalized_Scripts/merging_precip.ipynb` | `Finalized_Scripts/spatial_join.ipynb` |
+| `floodnet_full_dataset_merged.parquet` | `Finalized_Scripts/joining_parquets.ipynb` | `Finalized_Scripts/spatial_join.ipynb` |
+| `floodnet_floods_only.parquet` | `Finalized_Scripts/joining_parquets.ipynb` | `Test_Scripts/flood_duration.ipynb` |
 | `floodnet_full_dataset_merged_with_weather.parquet` | `Finalized_Scripts/spatial_join.ipynb` | `Finalized_Scripts/select_precip_influenced_gages.py` |
 | `rain_influenced_sites_raw.parquet` | `Finalized_Scripts/select_precip_influenced_gages.py` | `Finalized_Scripts/delineate_filtered_storms.py` |
 | `apparently-darling-gecko.parquet` | `Finalized_Scripts/apparently_darling_gecko.py` | `Finalized_Scripts/hpo_search.py`, `Finalized_Scripts/model_training.py` |
 | `rain_influenced_gages.parquet` | `Finalized_Scripts/delineate_filtered_storms.py` | `Finalized_Scripts/rain_influenced_EDA.ipynb`, `Finalized_Scripts/hpo_search.py`, `Finalized_Scripts/model_training.py` |
-| `delineated_storms.parquet` | `Finalized_Scripts/updated_method_storm_seperation.ipynb` | `Finalized_Scripts/floodnet_eda.ipynb` |
+| `delineated_storms.parquet` | `Test_Scripts/updated_method_storm_seperation.ipynb` | `Finalized_Scripts/floodnet_eda.ipynb` |
 | `floodnet_hpo_newfilter.db` | `Finalized_Scripts/hpo_search.py` | `Finalized_Scripts/model_training.py` |
 
-## 4. Notebook Run Order
+Note:
+- `Finalized_Scripts/merging_precip.ipynb` is currently configured to read source CSVs from `data_files/request/` and writes `nyc_precipitation_master.parquet`; place that parquet under `Data_Files/` for `spatial_join.ipynb`.
+
+## 4. Pipeline Run Order
 
 Use this order for a clean, reproducible workflow:
 
 1. `Finalized_Scripts/parquet_floodnet_download.py`
 2. `Finalized_Scripts/joining_parquets.ipynb`
-3. `Finalized_Scripts/spatial_join.ipynb`
-4. `Finalized_Scripts/select_precip_influenced_gages.py` (top-10 gages, 30-day tidal gate; creates `Data_Files/rain_influenced_sites_raw.parquet`)
-5. `Finalized_Scripts/delineate_filtered_storms.py` (creates final training input `Data_Files/rain_influenced_gages.parquet`)
-6. `Finalized_Scripts/apparently_darling_gecko.py` (isolates the single modeling gage and creates `Data_Files/apparently-darling-gecko.parquet`)
-7. `Finalized_Scripts/rain_influenced_EDA.ipynb` (rain-coupling diagnostics for selected/delineated gages)
-8. `Finalized_Scripts/hpo_search.py` (default input: `apparently-darling-gecko.parquet`)
-9. `Finalized_Scripts/model_training.py` (default input: `apparently-darling-gecko.parquet`)
-10. Optional full-network analysis notebooks: `Finalized_Scripts/updated_method_storm_seperation.ipynb`, `Finalized_Scripts/floodnet_eda.ipynb`, `Finalized_Scripts/flood_duration.ipynb`, `Finalized_Scripts/finalized_lstm_modeling.ipynb`
+3. `Finalized_Scripts/merging_precip.ipynb` (builds `nyc_precipitation_master.parquet`)
+4. `Finalized_Scripts/spatial_join.ipynb`
+5. `Finalized_Scripts/select_precip_influenced_gages.py` (default `--top-n 3`; creates `Data_Files/rain_influenced_sites_raw.parquet`)
+6. `Finalized_Scripts/delineate_filtered_storms.py` (creates `Data_Files/rain_influenced_gages.parquet`)
+7. `Finalized_Scripts/apparently_darling_gecko.py` (isolates one deployment and creates `Data_Files/apparently-darling-gecko.parquet`)
+8. `Finalized_Scripts/rain_influenced_EDA.ipynb` (rain-coupling diagnostics)
+9. `Finalized_Scripts/hpo_search.py` (default input: `apparently-darling-gecko.parquet`)
+10. `Finalized_Scripts/model_training.py` (default input: `apparently-darling-gecko.parquet`)
+11. Optional full-network analysis notebooks: `Test_Scripts/updated_method_storm_seperation.ipynb`, `Finalized_Scripts/floodnet_eda.ipynb`, `Test_Scripts/flood_duration.ipynb`, `Test_Scripts/finalized_lstm_modeling.ipynb`
 
 ## 5. Modeling Scope: Why One Gage
 
@@ -93,35 +98,35 @@ For final model development, the workflow uses one high-reliability FloodNet dep
 
 ## 6. Verified Metrics (Accuracy Check)
 
-The current checked metrics are from `results/run_log.json` with timestamp `2026-05-03T12:00:36.337321`.
+The current checked metrics are from `results/run_log.json` with timestamp `2026-05-04T15:38:45.092605`.
 
 Test-set skill scores:
 
 | Model | KGE | NSE | RMSE (in) | PBIAS (%) | PeakNSE |
 |---|---:|---:|---:|---:|---:|
 | Log-Ridge | -0.0246 | 0.1502 | 1.3014 | 55.83 | -0.4895 |
-| Res-ANN | 0.0772 | 0.1806 | 1.2779 | 30.07 | -0.4044 |
-| Attn-LSTM | -0.0477 | 0.0843 | 1.3695 | 45.18 | -0.5499 |
+| Res-ANN | 0.0323 | 0.1273 | 1.3188 | 40.55 | -0.4663 |
+| Attn-LSTM | 0.0699 | 0.1796 | 1.2963 | 32.11 | -0.4105 |
 
 Train-set skill scores:
 
 | Model | KGE | NSE | RMSE (in) | PBIAS (%) | PeakNSE |
 |---|---:|---:|---:|---:|---:|
 | Log-Ridge | 0.4419 | 0.1626 | 0.4988 | 3.54 | -1.1352 |
-| Res-ANN | 0.5348 | 0.2275 | 0.4790 | 1.98 | -0.5224 |
-| Attn-LSTM | 0.6899 | 0.5888 | 0.3548 | -2.62 | -0.1798 |
+| Res-ANN | 0.5302 | 0.1229 | 0.5105 | 6.47 | -0.5716 |
+| Attn-LSTM | 0.6296 | 0.5234 | 0.3820 | 1.67 | -0.1554 |
 
 ## 7. SLURM Submission
 
 - Unified job script:
-  - `Finalized_Scripts/run_rain_influenced.sbatch`
+  - `Test_Scripts/run_rain_influenced.sbatch`
 - Examples:
 
 ```bash
-sbatch Finalized_Scripts/run_rain_influenced.sbatch
-sbatch --export=STEP=hpo Finalized_Scripts/run_rain_influenced.sbatch
-sbatch --export=STEP=train Finalized_Scripts/run_rain_influenced.sbatch
-sbatch --export=STEP=all Finalized_Scripts/run_rain_influenced.sbatch
+sbatch Test_Scripts/run_rain_influenced.sbatch
+sbatch --export=STEP=hpo Test_Scripts/run_rain_influenced.sbatch
+sbatch --export=STEP=train Test_Scripts/run_rain_influenced.sbatch
+sbatch --export=STEP=all Test_Scripts/run_rain_influenced.sbatch
 ```
 
 - Legacy scripts are also aligned to the new input file:
