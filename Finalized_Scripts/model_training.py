@@ -20,6 +20,7 @@ import json
 import gc
 import warnings
 import joblib
+from contextlib import nullcontext
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import os
@@ -38,7 +39,8 @@ warnings.filterwarnings('ignore')
 # ── Multi-GPU Setup ──────────────────────────────────────────────────────────
 N_GPUS  = min(torch.cuda.device_count(), 2)
 PRIMARY = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-scaler_amp = GradScaler(device=PRIMARY.type) if torch.cuda.is_available() else None
+HAS_CUDA = torch.cuda.is_available()
+scaler_amp = GradScaler(device=PRIMARY.type) if HAS_CUDA else None
  
 print(f"🚀 Using {N_GPUS} GPU(s) | Primary: {PRIMARY}")
 for i in range(N_GPUS):
@@ -55,11 +57,16 @@ np.random.seed(SEED)
 # ─────────────────────────────────────────────────────────────────────────────
  
 def vram_free_gb(device: int = 0):
+    if not HAS_CUDA:
+        return float("inf"), float("inf")
     torch.cuda.synchronize(device)
     free, total = torch.cuda.mem_get_info(device)
     return free / 1e9, total / 1e9
  
 def require_vram(gb_needed: float, label: str = ""):
+    if not HAS_CUDA:
+        print(f"   VRAM check [{label}]: skipped (CPU-only runtime)")
+        return
     free, total = vram_free_gb()
     print(f"   VRAM check [{label}]: {free:.1f} GB free / {total:.1f} GB total")
     if free < gb_needed:
@@ -71,6 +78,13 @@ def require_vram(gb_needed: float, label: str = ""):
                 f"[{label}] Need ≥{gb_needed:.1f} GB free, only {free:.1f} GB available. "
                 "Reduce hidden_size, n_layers, or batch size in best_params."
             )
+
+def maybe_cuda_empty_cache() -> None:
+    if HAS_CUDA:
+        torch.cuda.empty_cache()
+
+def amp_context():
+    return autocast(device_type='cuda') if HAS_CUDA else nullcontext()
  
 def safe_batch_size(model: nn.Module, sample_input: torch.Tensor,
                     starting_batch: int = 32768, min_batch: int = 512) -> int:
@@ -78,12 +92,12 @@ def safe_batch_size(model: nn.Module, sample_input: torch.Tensor,
     model.eval()
     while batch >= min_batch:
         try:
-            torch.cuda.empty_cache()
+            maybe_cuda_empty_cache()
             dummy = sample_input[:batch].to(PRIMARY)
-            with torch.no_grad(), autocast(device_type='cuda'):
+            with torch.no_grad(), amp_context():
                 _ = model(dummy)
             del dummy
-            torch.cuda.empty_cache()
+            maybe_cuda_empty_cache()
             print(f"   ✅ Safe batch size: {batch:,}")
             return batch
         except torch.cuda.OutOfMemoryError:
@@ -97,18 +111,25 @@ def train_step(model: nn.Module, opt: optim.Optimizer,
                clip_grad: float | None = None) -> float | None:
     try:
         opt.zero_grad(set_to_none=True)
-        with autocast(device_type='cuda'):
+        if amp_scaler is not None:
+            with amp_context():
+                loss = loss_fn(model(bx), by)
+            amp_scaler.scale(loss).backward()
+            if clip_grad is not None:
+                amp_scaler.unscale_(opt)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            amp_scaler.step(opt)
+            amp_scaler.update()
+        else:
             loss = loss_fn(model(bx), by)
-        amp_scaler.scale(loss).backward()
-        if clip_grad is not None:
-            amp_scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-        amp_scaler.step(opt)
-        amp_scaler.update()
+            loss.backward()
+            if clip_grad is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+            opt.step()
         return loss.item()
     except torch.cuda.OutOfMemoryError:
         opt.zero_grad(set_to_none=True)
-        torch.cuda.empty_cache()
+        maybe_cuda_empty_cache()
         print("   ⚠️  OOM on batch — skipped and cache cleared.")
         return None
 
@@ -557,7 +578,7 @@ print(f"   ✅ Log-Ridge saved (Trial {best_lr_fit['trial_number']} | Train KGE=
 # BLOCK 9 │ Final Training — Residual ANN
 # ─────────────────────────────────────────────────────────────────────────────
 print("\n🏋️  [2/3] Training Residual ANN …")
-torch.cuda.empty_cache()
+maybe_cuda_empty_cache()
 gc.collect()
 require_vram(gb_needed=2.0, label="Res-ANN init")
  
@@ -595,7 +616,7 @@ for cand in ann_candidates:
         sched_ann.step()
 
         ann_model.eval()
-        with torch.no_grad(), autocast(device_type='cuda'):
+        with torch.no_grad(), amp_context():
             stop_preds = descale(ann_model(X_stop_gpu)).flatten().cpu().numpy()
             stop_kge = kge(y_stop_raw, stop_preds)
             if np.isnan(stop_kge): stop_kge = -999.0
@@ -624,7 +645,7 @@ for cand in ann_candidates:
         }
 
     del ann_model, opt_ann
-    torch.cuda.empty_cache()
+    maybe_cuda_empty_cache()
     gc.collect()
 
 bp_ann = best_ann_fit["params"]
@@ -633,7 +654,7 @@ ann_train_preds = best_ann_fit["train_preds"]
 torch.save({'model_state': best_ann_fit["state_dict"], 'best_params': bp_ann}, CHECKPOINT_DIR / "ann_final.pt")
 
 del X_stop_gpu, y_stop_gpu, X_fit_gpu, y_fit_gpu
-torch.cuda.empty_cache()
+maybe_cuda_empty_cache()
 gc.collect()
 print(f"   ✅ Res-ANN saved (Trial {best_ann_fit['trial_number']} | Train KGE={best_ann_fit['train_metrics']['KGE']:.4f}).")
 
@@ -671,7 +692,7 @@ for cand in lstm_candidates:
 
     dummy_input = X_fit_l.to(PRIMARY, non_blocking=True)
     batch_lstm = resolve_batch_size(lstm_model, dummy_input, p, default_start=512, default_min=32, model_name="Attn-LSTM")
-    del dummy_input; torch.cuda.empty_cache()
+    del dummy_input; maybe_cuda_empty_cache()
 
     best_stop_kge_l, wait_l = float('-inf'), 0
     lstm_ckpt = CHECKPOINT_DIR / f"lstm_best_trial_{cand['trial_number']}.pt"
@@ -731,7 +752,7 @@ for cand in lstm_candidates:
 
     del Xtv_w_cpu, ytv_w_cpu, Xte_w_cpu, X_fit_l, y_fit_l, X_stop_l, y_stop_l
     del lstm_model, opt_lstm
-    gc.collect(); torch.cuda.empty_cache()
+    gc.collect(); maybe_cuda_empty_cache()
 
 if best_lstm_fit is None: raise RuntimeError("No valid LSTM candidate produced windowed train/test data.")
 
@@ -742,7 +763,7 @@ lstm_train_preds, lstm_train_obs = best_lstm_fit["train_preds"], best_lstm_fit["
 
 torch.save({'model_state': best_lstm_fit["state_dict"], 'best_params': bp_lstm, 'window_size': WINDOW_FINAL}, CHECKPOINT_DIR / "lstm_final.pt")
 
-gc.collect(); torch.cuda.empty_cache()
+gc.collect(); maybe_cuda_empty_cache()
 print(f"   ✅ Attn-LSTM saved (Trial {best_lstm_fit['trial_number']} | Train KGE={best_lstm_fit['train_metrics']['KGE']:.4f}).")
 
 # %%
