@@ -3,11 +3,11 @@
 #SBATCH --output=hpo_%j.out
 #SBATCH --error=hpo_%j.err
 #SBATCH --partition=gpu
-#SBATCH --account=ds6050_sp26 
-#SBATCH --gres=gpu:1     
+#SBATCH --account=uvahydroinformatics
+#SBATCH --gres=gpu:2   
 #SBATCH --cpus-per-task=8      
 #SBATCH --mem=100G               
-#SBATCH --time=12:00:00          
+#SBATCH --time=20:00:00          
 
 # Navigate to your working directory
 cd /home/upw4ys/Documents/floodnet_work
