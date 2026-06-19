@@ -1,0 +1,68 @@
+🚀 Using 1 GPU(s) | Primary: cuda:0
+   [0] NVIDIA A40  (47.7 GB)
+📊 Train: 25,734 rows | Val: 4,858 rows | Test: 8,283 rows
+📈 Test Eval Peak Threshold (90th Pct): 1.0236 inches
+
+🏋️  [1/3] Training Log-Ridge …
+   ✅ Log-Ridge saved (Trial 281 | Train KGE=0.4419).
+
+🏋️  [2/3] Training Residual ANN …
+   VRAM check [Res-ANN init]: 47.2 GB free / 47.7 GB total
+   🎯 Res-ANN: unweighted huber loss
+   📦 Res-ANN: batch probe start=16,384, min=256
+   ✅ Safe batch size: 16,384
+   🎯 Res-ANN: unweighted huber loss
+   📦 Res-ANN: batch probe start=16,384, min=256
+   ✅ Safe batch size: 16,384
+   🎯 Res-ANN: unweighted huber loss
+   📦 Res-ANN: batch probe start=16,384, min=256
+   ✅ Safe batch size: 16,384
+   ✅ Res-ANN saved (Trial 1006 | Train KGE=0.6263).
+
+🏋️  [3/3] Training Attention-LSTM …
+   VRAM check [Attn-LSTM init]: 47.1 GB free / 47.7 GB total
+   🎯 Attn-LSTM: unweighted huber loss
+   📦 Attn-LSTM: batch probe start=1,024, min=32
+   ✅ Safe batch size: 1,024
+   🎯 Attn-LSTM: unweighted huber loss
+   📦 Attn-LSTM: batch probe start=2,048, min=32
+   ✅ Safe batch size: 2,048
+   🎯 Attn-LSTM: unweighted huber loss
+   📦 Attn-LSTM: batch probe start=1,024, min=32
+   ✅ Safe batch size: 1,024
+   ✅ Attn-LSTM saved (Trial 1974 | Train KGE=0.5890).
+
+📊 ── Final Train-Set Metrics ─────────────────────────
+                          KGE      NSE   RMSE(in)   PBIAS%  PeakNSE
+──────────────────────────────────────────────────────────────────
+Log-Ridge              0.4419   0.1626     0.4988     3.54  -1.1352
+Res-ANN                0.6263   0.4354     0.4095    10.73  -0.2897
+Attn-LSTM              0.5890   0.5034     0.3899   -12.80  -0.1645
+──────────────────────────────────────────────────────────────────
+
+📊 ── Final Test-Set Metrics ──────────────────────────
+                          KGE      NSE   RMSE(in)   PBIAS%  PeakNSE
+──────────────────────────────────────────────────────────────────
+Log-Ridge             -0.0246   0.1502     1.3014    55.83  -0.4895
+Res-ANN                0.0238   0.1384     1.3104    40.05  -0.4844
+Attn-LSTM              0.0670   0.1743     1.3004    31.22  -0.3713
+──────────────────────────────────────────────────────────────────
+
+📉 ── Overfit Gap (Train - Test) ─────────────────────
+Log-Ridge            ΔKGE=+0.4665  ΔNSE=+0.0124
+Res-ANN              ΔKGE=+0.6025  ΔNSE=+0.2970
+Attn-LSTM            ΔKGE=+0.5220  ΔNSE=+0.3291
+
+✅ Run log saved → /sfs/gpfs/tardis/home/dng3fe/floodnet_work/results/run_log.json
+✅ Figure saved → /sfs/gpfs/tardis/home/dng3fe/floodnet_work/Images_or_plots/flood_model_shootout.png
+
+╔══════════════════════════════════════════════════════╗
+║           Training Complete — Output Summary         ║
+╠══════════════════════════════════════════════════════╣
+║  Checkpoints  → /sfs/gpfs/tardis/home/dng3fe/floodnet_work/checkpoints║
+║    ann_final.pt / lstm_final.pt / log_ridge_final.pkl║
+║    scaler_X.pkl / scaler_y.pkl                      ║
+║  Run log      → /sfs/gpfs/tardis/home/dng3fe/floodnet_work/results/run_log.json║
+║  Figure       → /sfs/gpfs/tardis/home/dng3fe/floodnet_work/Images_or_plots/flood_model_shootout.png║
+╚══════════════════════════════════════════════════════╝
+

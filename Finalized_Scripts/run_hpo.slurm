@@ -10,7 +10,7 @@
 #SBATCH --time=20:00:00          
 
 # Navigate to your working directory
-cd /home/upw4ys/Documents/floodnet_work
+cd /home/dng3fe/floodnet_work
 
 # Activate your virtual environment
 source .venv/bin/activate 

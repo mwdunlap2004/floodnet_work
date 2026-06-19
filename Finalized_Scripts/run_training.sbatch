@@ -10,7 +10,7 @@
 #SBATCH --time=00:30:00         # Maximum time the job will run
 
 # Navigate to your working directory
-cd /home/upw4ys/Documents/floodnet_work
+cd /home/dng3fe/floodnet_work
 
 # Activate your virtual environment
 source .venv/bin/activate 

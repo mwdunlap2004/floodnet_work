@@ -58,7 +58,7 @@ def main() -> None:
         "--drop-cols", 
         nargs="*", 
         default=[
-            "soil_moisture_05cm [m^3/m^3]", "soil_moisture_25cm [m^3/m^3]", "soil_moisture_50cm [m^3/m^3]",
+            "soil_moisture_25cm [m^3/m^3]", "soil_moisture_50cm [m^3/m^3]",
             "frozen_soil_05cm [bit]", "frozen_soil_25cm [bit]", "frozen_soil_50cm [bit]",
             "soil_temp_05cm [degF]", "soil_temp_25cm [degF]", "soil_temp_50cm [degF]",
             "snow_depth [inch]"
