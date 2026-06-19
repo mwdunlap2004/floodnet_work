@@ -748,9 +748,9 @@ def objective_lstm(trial):
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 8 │ Hyperparameter Search
 # ─────────────────────────────────────────────────────────────────────────────
-N_TRIALS_LR   = 1000
-N_TRIALS_ANN  = 1000
-N_TRIALS_LSTM = 1000
+N_TRIALS_LR   = 1
+N_TRIALS_ANN  = 1
+N_TRIALS_LSTM = 1
  
 HPO_DB_NAME = "floodnet_hpo_newfilter.db"
 DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/{HPO_DB_NAME}"
