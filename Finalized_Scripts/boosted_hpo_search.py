@@ -16,7 +16,7 @@ import gc
 import warnings
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import Ridge
-from sklearn.ensemble import AdaBoostRegressor  # FIX 1: was missing
+from sklearn.ensemble import AdaBoostRegressor
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -60,10 +60,6 @@ TARGET = 'depth_inches'
 TV_SPLIT = (0.70, 0.15, 0.15)  # Train / Val / Test proportions
 
 # ── HPO Objective Settings ────────────────────────────────────────────────────
-# Primary optimisation target is KGE — it balances correlation, variability
-# bias, and mean bias independently, making it harder to game than NSE alone.
-# Trials where |PBIAS| exceeds this threshold are penalised to prevent the
-# optimizer from accepting models with acceptable KGE but dangerous volume bias.
 PBIAS_PRUNE_THRESHOLD = 15.0  # percent — standard hydrological acceptability limit
 
 # %%
@@ -228,8 +224,6 @@ y_val_raw = val_df[TARGET].values.astype('float32')
 y_te_raw  = test_df[TARGET].values.astype('float32')
 
 # Precompute the 90th-percentile depth threshold on the validation set.
-# Used by peak_nse() to isolate model performance during high-depth events,
-# which are the operationally critical timesteps for flood warning.
 VAL_PEAK_THRESHOLD = float(np.percentile(y_val_raw, 90))
 print(f"📈 Val 90th-percentile depth threshold: {VAL_PEAK_THRESHOLD:.4f} inches")
  
@@ -256,9 +250,6 @@ def descale(p: torch.Tensor) -> torch.Tensor:
 class AsymmetricWeightedDepthLoss(nn.Module):
     """
     Depth-weighted AND Asymmetric regression loss.
-    1. Depth-weighted: High-depth events are penalized more than shallow events.
-    2. Asymmetric: Under-predictions (dangerous) are heavily penalized 
-       compared to over-predictions (false alarms).
     """
     def __init__(self, base: str = "huber", lambda_weight: float = 2.0, underpredict_penalty: float = 4.0):
         super().__init__()
@@ -267,7 +258,6 @@ class AsymmetricWeightedDepthLoss(nn.Module):
         self.underpredict_penalty = float(underpredict_penalty) 
         self.huber = nn.HuberLoss(reduction='none')
 
-    # FIX 2: Added dynamic_weights parameter to signature and applied it in return
     def forward(self, y_pred: torch.Tensor, y_true_scaled: torch.Tensor, dynamic_weights: torch.Tensor) -> torch.Tensor:
         if self.base == "mse":
             base_loss = (y_pred - y_true_scaled) ** 2
@@ -283,6 +273,7 @@ class AsymmetricWeightedDepthLoss(nn.Module):
             1.0
         )
         
+        # dynamic_weights is unsqueezed to broadcast correctly over (batch_sz, 1)
         return (base_loss * depth_weight * asymmetry_weight * dynamic_weights.unsqueeze(1)).mean()
  
 print(f"✅ Tensors on {PRIMARY}. VRAM used: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
@@ -325,8 +316,8 @@ def get_windows(split: str, window: int):
             Xw, yw  = build_storm_windows(X_te, y_te_sc, sid_te, window)
         
         _WINDOW_CACHE[key] = (
-            torch.tensor(Xw), 
-            torch.tensor(yw),
+            torch.tensor(Xw, dtype=torch.float32), 
+            torch.tensor(yw, dtype=torch.float32),
         )
     return _WINDOW_CACHE[key]
  
@@ -351,7 +342,6 @@ class ResidualBlock(nn.Module):
 class SotaANN(nn.Module):
     """
     Deep residual MLP for tabular flood prediction.
-    Input: (B, n_features) → Output: (B, 1) scaled depth.
     """
     def __init__(self, input_size: int, hidden_size: int,
                  n_layers: int = 3, dropout: float = 0.1):
@@ -369,7 +359,6 @@ class SotaANN(nn.Module):
 class SotaAttentionLSTM(nn.Module):
     """
     Bidirectional LSTM + soft attention for sequence-to-scalar flood prediction.
-    Input: (B, T, n_features) → Output: (B, 1) scaled depth.
     """
     def __init__(self, input_size: int, hidden_size: int,
                  n_layers: int = 2, dropout: float = 0.15):
@@ -401,22 +390,14 @@ def wrap_model(model: nn.Module) -> nn.Module:
 # ─────────────────────────────────────────────────────────────────────────────
  
 def nse(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
-    """
-    Nash–Sutcliffe Efficiency. NSE = 1 is perfect; NSE < 0 means the mean
-    observed is a better predictor than the model.
-    """
+    """Nash–Sutcliffe Efficiency."""
     num = torch.sum((y_true - y_pred) ** 2)
     den = torch.sum((y_true - y_true.mean()) ** 2) + 1e-9
     return (1 - num / den).item()
  
  
 def kge(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """
-    Kling–Gupta Efficiency. Decomposes error into correlation (r),
-    variability bias (α), and mean bias (β). KGE = 1 is perfect.
-    Primary optimisation target: harder to game than NSE because it
-    penalises correlation, variability, and mean bias independently.
-    """
+    """Kling–Gupta Efficiency."""
     r     = np.corrcoef(y_true, y_pred)[0, 1]
     if np.isnan(r):
         r = 0.0
@@ -430,23 +411,13 @@ def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
  
  
 def pbias(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """
-    Percent Bias. 0% = perfect. Positive = model underestimates volume
-    (dangerous for flood risk); negative = overestimates.
-    """
+    """Percent Bias."""
     return float(100 * np.sum(y_true - y_pred) / (np.sum(y_true) + 1e-9))
 
 
 def peak_nse(y_true: np.ndarray, y_pred: np.ndarray,
              threshold: float) -> float:
-    """
-    NSE computed only on timesteps where observed depth exceeds `threshold`
-    (default: validation 90th percentile). Isolates model skill on the
-    high-depth events that matter most for flood warning. Logged as a
-    user_attr on every trial — not the optimisation target, but a critical
-    diagnostic to detect models that are statistically acceptable overall
-    but fail during the events that actually count.
-    """
+    """NSE computed only on timesteps where observed depth exceeds threshold."""
     mask = y_true >= threshold
     if mask.sum() < 2:
         return float('nan')
@@ -456,13 +427,7 @@ def peak_nse(y_true: np.ndarray, y_pred: np.ndarray,
 
 
 def check_pbias_penalty(pb: float) -> float:
-    """
-    Return a KGE penalty if |PBIAS| exceeds the acceptability threshold.
-    Rather than hard-pruning (which wastes the trial's compute), we apply a
-    smooth penalty that drives the optimizer away from biased regions while
-    still recording the trial for diagnostics.
-    Penalty = 0 when |PBIAS| <= threshold; scales linearly beyond it.
-    """
+    """Return a KGE penalty if |PBIAS| exceeds the acceptability threshold."""
     excess = max(0.0, abs(pb) - PBIAS_PRUNE_THRESHOLD)
     return excess * 0.02   # 0.02 KGE penalty per 1% excess bias
  
@@ -481,6 +446,9 @@ def eval_metrics(name: str, y_true_np: np.ndarray,
     }
 
 def ensemble_predict(models: list, weights: list, X_tensor: torch.Tensor, batch_sz: int = 4096) -> np.ndarray:
+    """
+    VRAM-safe AdaBoost inference function. Moves models to GPU one at a time.
+    """
     all_preds = []
     for m in models:
         m.to(PRIMARY)
@@ -511,16 +479,10 @@ def ensemble_predict(models: list, weights: list, X_tensor: torch.Tensor, batch_
 
 # %%
 # %%─────────────────────────────────────────────────────────────────────────
-# BLOCK 7 │ Optuna Objectives  (Val KGE is the primary optimisation target)
+# BLOCK 7 │ Optuna Objectives
 # ─────────────────────────────────────────────────────────────────────────────
-# All objectives:
-#   • Optimise toward KGE (not NSE) — balances r, α, β independently.
-#   • Apply a smooth PBIAS penalty when |PBIAS| > PBIAS_PRUNE_THRESHOLD.
-#   • Log NSE, RMSE, PBIAS, peak_NSE, and KGE as user_attrs for post-hoc
-#     analysis without losing any trial information.
-#   • Test set is untouched until Block 10.
  
-# ── 7a. Log-Space Ridge Regression (CPU) ────────────────────────────────────
+# ── 7a. Boosted Log-Space Ridge Regression ────────────────────────────────────
  
 def objective_log_reg(trial):
     alpha            = trial.suggest_float("alpha",            1e-6, 20.0, log=True)
@@ -535,7 +497,6 @@ def objective_log_reg(trial):
     sample_weight = 1.0 + loss_lambda * np.clip(y_tr_np, a_min=0.0, a_max=None)
     fit_kwargs = {"sample_weight": sample_weight} if use_weighted_loss else {}
 
-    # FIX 3: Actually wrap Ridge in AdaBoostRegressor AND call .fit() in both branches
     base_estimator = Ridge(alpha=alpha)
     model = AdaBoostRegressor(
         estimator=base_estimator,
@@ -578,7 +539,7 @@ def objective_log_reg(trial):
  
 
 # %%
-# ── 7b. Residual ANN (GPU, DataParallel) ────────────────────────────────────
+# ── 7b. Boosted Residual ANN (GPU, DataParallel) ─────────────────────────────
 
 def objective_ann(trial):
     h_size   = trial.suggest_int("hidden_size",  128, 1024, step=128)
@@ -587,13 +548,11 @@ def objective_ann(trial):
     dropout  = trial.suggest_float("dropout",     0.0, 0.15)
     weight_decay = trial.suggest_float("weight_decay", 1e-8, 1e-4, log=True)
     loss_name = trial.suggest_categorical("loss_fn", ["huber", "mse"])
-    use_weighted_loss = trial.suggest_categorical("use_weighted_loss", [True, False])
     loss_lambda = trial.suggest_float("loss_lambda", 0.1, 10.0, log=True)
     underpredict_penalty = trial.suggest_float("underpredict_penalty", 1.0, 10.0)
     batch_sz = trial.suggest_categorical("batch_size", [2048, 4096, 8192, 16384, 32768])
     n_estimators = trial.suggest_int("n_estimators", 3, 8)
 
-    # FIX 4: Define loss_fn, models, model_weights, w BEFORE the boosting loop
     loss_fn = AsymmetricWeightedDepthLoss(
         base=loss_name, lambda_weight=loss_lambda, underpredict_penalty=underpredict_penalty
     )
@@ -632,6 +591,9 @@ def objective_ann(trial):
             tr_preds_gpu = descale(model(X_tr_gpu)).flatten()
             tr_true_gpu  = descale(y_tr_gpu).flatten()
 
+            if torch.isnan(tr_preds_gpu).any():
+                break  # Stop boosting if model output is NaN
+
             abs_err = torch.abs(tr_true_gpu - tr_preds_gpu)
             D = torch.max(abs_err)
 
@@ -659,6 +621,9 @@ def objective_ann(trial):
         del opt
         torch.cuda.empty_cache()
 
+    if len(models) == 0:
+        raise optuna.TrialPruned("Base learner produced NaNs (exploding gradients).")
+
     # Evaluate the ensemble on the validation set
     best_val_kge  = float('-inf')
     best_val_nse  = float('-inf')
@@ -682,6 +647,10 @@ def objective_ann(trial):
     )
 
     penalised_kge = epoch_kge - check_pbias_penalty(epoch_pb)
+    
+    if np.isnan(penalised_kge):
+        raise optuna.TrialPruned("Evaluation resulted in NaN.")
+        
     best_val_kge  = penalised_kge
     best_val_nse  = epoch_nse
     best_val_rmse = epoch_rmse
@@ -698,9 +667,11 @@ def objective_ann(trial):
     trial.set_user_attr("val_pbias",    float(best_val_pb))
     trial.set_user_attr("val_peak_nse", float(best_val_pkn) if not np.isnan(best_val_pkn) else -9.0)
 
-    return best_val_kge  # penalised KGE is the optimisation target
+    return best_val_kge
 
 # %%
+# ── 7c. Boosted Attention-LSTM (GPU) ─────────────────────────────────────────
+
 def objective_lstm(trial):
     global _WINDOW_CACHE
     
@@ -718,7 +689,6 @@ def objective_lstm(trial):
     dropout  = trial.suggest_float("dropout",    0.0, 0.15)
     weight_decay = trial.suggest_float("weight_decay", 1e-8, 1e-4, log=True)
     loss_name = trial.suggest_categorical("loss_fn", ["huber", "mse"])
-    use_weighted_loss = trial.suggest_categorical("use_weighted_loss", [True, False])
     loss_lambda = trial.suggest_float("loss_lambda", 0.1, 10.0, log=True)
     underpredict_penalty = trial.suggest_float("underpredict_penalty", 1.0, 10.0)
     batch_sz = trial.suggest_categorical("batch_size", [128, 256, 512, 1024, 2048])
@@ -730,7 +700,6 @@ def objective_lstm(trial):
     if len(Xtw_cpu) == 0:
         return float('-inf')
 
-    # FIX 4 (LSTM): Define loss_fn, models, model_weights, w BEFORE the boosting loop
     loss_fn = AsymmetricWeightedDepthLoss(
         base=loss_name, lambda_weight=loss_lambda, underpredict_penalty=underpredict_penalty
     )
@@ -754,8 +723,9 @@ def objective_lstm(trial):
                     bx = Xtw_cpu[idx].to(PRIMARY, non_blocking=True)
                     by = ytw_cpu[idx].to(PRIMARY, non_blocking=True)
                     opt.zero_grad(set_to_none=True)
-                    # Scale batch weights to average 1.0 to preserve learning rate stability
-                    batch_w = w[idx] * n_samples
+                    
+                    # Scale batch weights to average 1.0
+                    batch_w = w[idx.to(PRIMARY)] * n_samples
                     with autocast(device_type=PRIMARY.type):
                         loss = loss_fn(model(bx), by, batch_w)
                     if scaler_amp:
@@ -778,6 +748,9 @@ def objective_lstm(trial):
                     all_tr.append(model(bxt))
                 tr_preds_gpu = _descale(torch.cat(all_tr)).flatten()
                 tr_true_gpu  = _descale(ytw_cpu.to(PRIMARY)).flatten()
+
+                if torch.isnan(tr_preds_gpu).any():
+                    break  # Stop boosting if model output is NaN
 
                 abs_err = torch.abs(tr_true_gpu - tr_preds_gpu)
                 D = torch.max(abs_err)
@@ -806,14 +779,10 @@ def objective_lstm(trial):
             del opt
             torch.cuda.empty_cache()
 
-        # FIX 5: Evaluate ensemble using windowed val sequences (not flat X_val_gpu)
-        best_val_kge  = float('-inf')
-        best_val_nse  = float('-inf')
-        best_val_rmse = float('inf')
-        best_val_pb   = float('nan')
-        best_val_pkn  = float('nan')
-        best_tr_nse   = float('-inf')
+        if len(models) == 0:
+            raise optuna.TrialPruned("Base learner produced NaNs (exploding gradients).")
 
+        # Evaluate ensemble using windowed val sequences (VRAM safe for 3D tensors)
         val_true_np = _descale(yvw_cpu.to(PRIMARY)).cpu().numpy().flatten()
         tr_true_np  = _descale(ytw_cpu.to(PRIMARY)).cpu().numpy().flatten()
 
@@ -833,7 +802,7 @@ def objective_lstm(trial):
             all_tr_preds.append(np.concatenate(tp))
             m.cpu()
 
-        # Weighted median aggregation (same as ensemble_predict)
+        # Weighted median aggregation
         weights_arr = np.array(model_weights)
 
         def _weighted_median(preds_list):
@@ -863,21 +832,18 @@ def objective_lstm(trial):
         )
 
         penalised_kge = epoch_kge - check_pbias_penalty(epoch_pb)
-        best_val_kge  = penalised_kge
-        best_val_nse  = epoch_nse
-        best_val_rmse = epoch_rmse
-        best_val_pb   = epoch_pb
-        best_val_pkn  = epoch_pkn
-        best_tr_nse   = epoch_tr_nse
 
-        trial.set_user_attr("train_nse",    float(best_tr_nse))
-        trial.set_user_attr("val_nse",      float(best_val_nse))
-        trial.set_user_attr("val_kge",      float(best_val_kge))
-        trial.set_user_attr("val_rmse",     float(best_val_rmse))
-        trial.set_user_attr("val_pbias",    float(best_val_pb))
-        trial.set_user_attr("val_peak_nse", float(best_val_pkn) if not np.isnan(best_val_pkn) else -9.0)
+        if np.isnan(penalised_kge):
+            raise optuna.TrialPruned("Evaluation resulted in NaN.")
 
-        return best_val_kge  # penalised KGE is the optimisation target
+        trial.set_user_attr("train_nse",    float(epoch_tr_nse))
+        trial.set_user_attr("val_nse",      float(epoch_nse))
+        trial.set_user_attr("val_kge",      float(epoch_kge))
+        trial.set_user_attr("val_rmse",     float(epoch_rmse))
+        trial.set_user_attr("val_pbias",    float(epoch_pb))
+        trial.set_user_attr("val_peak_nse", float(epoch_pkn) if not np.isnan(epoch_pkn) else -9.0)
+
+        return penalised_kge
 
     except torch.OutOfMemoryError:
         for attr in ("train_nse", "val_nse", "val_kge", "val_rmse", "val_pbias", "val_peak_nse"):
@@ -894,13 +860,13 @@ N_TRIALS_LR   = 1
 N_TRIALS_ANN  = 1
 N_TRIALS_LSTM = 1
  
-HPO_DB_NAME = "floodnet_hpo_newfilter.db"
+HPO_DB_NAME = "floodnet_boosted_ensembles.db"
 DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/{HPO_DB_NAME}"
 print(f"Using Optuna DB: {DB}")
 
-print("🔎 [1/3] Log-Ridge baseline …")
+print("🔎 [1/3] AdaBoost Log-Ridge …")
 study_lr = optuna.create_study(
-    study_name="log_ridge",
+    study_name="ada_log_ridge",
     direction="maximize",   # maximise penalised KGE
     sampler=TPESampler(seed=SEED),
     storage=DB,
@@ -908,9 +874,9 @@ study_lr = optuna.create_study(
 )
 study_lr.optimize(objective_log_reg, n_trials=N_TRIALS_LR)
  
-print("🔎 [2/3] Residual ANN …")
+print("🔎 [2/3] AdaBoost Residual ANN …")
 study_ann = optuna.create_study(
-    study_name="res_ann",
+    study_name="ada_res_ann",
     direction="maximize",   # maximise penalised KGE
     sampler=TPESampler(seed=SEED),
     storage=DB,
@@ -966,9 +932,9 @@ Y_MEAN = torch.tensor(scaler_y.mean_,  device=PRIMARY, dtype=torch.float32)
 Y_STD  = torch.tensor(scaler_y.scale_, device=PRIMARY, dtype=torch.float32)
 print(f"✅ Y_MEAN={Y_MEAN.item():.4f}, Y_STD={Y_STD.item():.4f} — ready for LSTM search")
 
-print("🔎 [3/3] Attention-LSTM …")
+print("🔎 [3/3] AdaBoost Attention-LSTM …")
 study_lstm = optuna.create_study(
-    study_name="attn_lstm",
+    study_name="ada_attn_lstm",
     direction="maximize",   # maximise penalised KGE
     sampler=TPESampler(seed=SEED),
     storage=DB,
@@ -997,7 +963,7 @@ lstm_a = _best_attrs(study_lstm)
 print(f"\n{'─'*75}")
 print(f"{'Model':<15} {'PenKGE':>8} {'KGE':>8} {'NSE':>8} {'RMSE':>8} {'PBIAS%':>8} {'PeakNSE':>9}")
 print(f"{'─'*75}")
-for label, a in [('Log-Ridge', lr_a), ('Res-ANN', ann_a), ('Attn-LSTM', lstm_a)]:
+for label, a in [('Ada-Ridge', lr_a), ('Ada-ANN', ann_a), ('Ada-LSTM', lstm_a)]:
     print(f"{label:<15} {a['pen_kge']:>8.4f} {a['kge']:>8.4f} {a['nse']:>8.4f} "
           f"{a['rmse']:>8.4f} {a['pbias']:>8.2f} {a['peak_nse']:>9.4f}")
 print(f"{'─'*75}")
