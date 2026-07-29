@@ -572,9 +572,10 @@ def objective_log_reg(trial):
     trial.set_user_attr("val_rmse",   val_rmse)
     trial.set_user_attr("val_pbias",  val_pb)
     trial.set_user_attr("val_peak_nse", float(val_pkn) if not np.isnan(val_pkn) else -9.0)
-
+    
     penalty = check_pbias_penalty(val_pb)
-    return val_kge - penalty
+
+    return val_kge - penalty 
  
 
 # %%
@@ -584,14 +585,14 @@ def objective_ann(trial):
     h_size   = trial.suggest_int("hidden_size",  128, 1024, step=128)
     n_layers = trial.suggest_int("n_layers",       2,    6)
     lr       = trial.suggest_float("lr",       5e-5, 5e-3, log=True)
-    dropout  = trial.suggest_float("dropout",     0.0, 0.15)
-    weight_decay = trial.suggest_float("weight_decay", 1e-8, 1e-4, log=True)
+    dropout  = trial.suggest_float("dropout",     0.1, 0.4)
+    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
     loss_name = trial.suggest_categorical("loss_fn", ["huber", "mse"])
     use_weighted_loss = trial.suggest_categorical("use_weighted_loss", [True, False])
     loss_lambda = trial.suggest_float("loss_lambda", 0.1, 10.0, log=True)
     underpredict_penalty = trial.suggest_float("underpredict_penalty", 1.0, 10.0)
     batch_sz = trial.suggest_categorical("batch_size", [2048, 4096, 8192, 16384, 32768])
-    n_estimators = trial.suggest_int("n_estimators", 3, 8)
+    n_estimators = trial.suggest_int("n_estimators", 2, 4)
 
     # FIX 4: Define loss_fn, models, model_weights, w BEFORE the boosting loop
     loss_fn = AsymmetricWeightedDepthLoss(
@@ -698,7 +699,8 @@ def objective_ann(trial):
     trial.set_user_attr("val_pbias",    float(best_val_pb))
     trial.set_user_attr("val_peak_nse", float(best_val_pkn) if not np.isnan(best_val_pkn) else -9.0)
 
-    return best_val_kge  # penalised KGE is the optimisation target
+    peak_bonus = 0.15 * max(-1.0, best_val_pkn if not np.isnan(best_val_pkn) else -1.0)
+    return best_val_kge + peak_bonus
 
 # %%
 def objective_lstm(trial):
@@ -715,14 +717,14 @@ def objective_lstm(trial):
     h_size   = trial.suggest_int("hidden_size",  64, 256, step=32)
     n_layers = trial.suggest_int("n_layers",      1,   3)
     lr       = trial.suggest_float("lr",      5e-5, 2e-3, log=True)
-    dropout  = trial.suggest_float("dropout",    0.0, 0.15)
-    weight_decay = trial.suggest_float("weight_decay", 1e-8, 1e-4, log=True)
+    dropout  = trial.suggest_float("dropout",    0.1, 0.4)
+    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
     loss_name = trial.suggest_categorical("loss_fn", ["huber", "mse"])
     use_weighted_loss = trial.suggest_categorical("use_weighted_loss", [True, False])
     loss_lambda = trial.suggest_float("loss_lambda", 0.1, 10.0, log=True)
     underpredict_penalty = trial.suggest_float("underpredict_penalty", 1.0, 10.0)
     batch_sz = trial.suggest_categorical("batch_size", [128, 256, 512, 1024, 2048])
-    n_estimators = trial.suggest_int("n_estimators", 3, 8)
+    n_estimators = trial.suggest_int("n_estimators", 2, 4)
 
     Xtw_cpu, ytw_cpu = get_windows('train', window)
     Xvw_cpu, yvw_cpu = get_windows('val',   window)
@@ -877,7 +879,8 @@ def objective_lstm(trial):
         trial.set_user_attr("val_pbias",    float(best_val_pb))
         trial.set_user_attr("val_peak_nse", float(best_val_pkn) if not np.isnan(best_val_pkn) else -9.0)
 
-        return best_val_kge  # penalised KGE is the optimisation target
+        peak_bonus = 0.15 * max(-1.0, best_val_pkn if not np.isnan(best_val_pkn) else -1.0)
+        return best_val_kge + peak_bonus 
 
     except torch.OutOfMemoryError:
         for attr in ("train_nse", "val_nse", "val_kge", "val_rmse", "val_pbias", "val_peak_nse"):
@@ -890,11 +893,11 @@ def objective_lstm(trial):
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 8 │ Hyperparameter Search
 # ─────────────────────────────────────────────────────────────────────────────
-N_TRIALS_LR   = 1
-N_TRIALS_ANN  = 1
-N_TRIALS_LSTM = 1
+N_TRIALS_LR   = 1000
+N_TRIALS_ANN  = 1000
+N_TRIALS_LSTM = 1000
  
-HPO_DB_NAME = "floodnet_hpo_newfilter.db"
+HPO_DB_NAME = "floodnet_boosted_ensembles.db"
 DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/{HPO_DB_NAME}"
 print(f"Using Optuna DB: {DB}")
 

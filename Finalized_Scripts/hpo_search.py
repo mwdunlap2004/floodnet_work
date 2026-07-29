@@ -620,7 +620,9 @@ def objective_ann(trial):
     trial.set_user_attr("val_pbias",    float(best_val_pb))
     trial.set_user_attr("val_peak_nse", float(best_val_pkn) if not np.isnan(best_val_pkn) else -9.0)
 
-    return best_val_kge  # penalised KGE is the optimisation target
+    peak_bonus = 0.15 * max(-1.0, best_val_pkn if not np.isnan(best_val_pkn) else -1.0)
+    return best_val_kge + peak_bonus # penalised KGE is the optimisation target
+
 
 # %%
 def objective_lstm(trial):
@@ -734,7 +736,8 @@ def objective_lstm(trial):
         trial.set_user_attr("val_pbias",    float(best_val_pb))
         trial.set_user_attr("val_peak_nse", float(best_val_pkn) if not np.isnan(best_val_pkn) else -9.0)
 
-        return best_val_kge  # penalised KGE is the optimisation target
+        peak_bonus = 0.15 * max(-1.0, best_val_pkn if not np.isnan(best_val_pkn) else -1.0)
+        return best_val_kge + peak_bonus # penalised KGE is the optimisation target
 
     except torch.OutOfMemoryError:
         for attr in ("train_nse", "val_nse", "val_kge", "val_rmse", "val_pbias", "val_peak_nse"):
@@ -748,9 +751,9 @@ def objective_lstm(trial):
 # %%─────────────────────────────────────────────────────────────────────────
 # BLOCK 8 │ Hyperparameter Search
 # ─────────────────────────────────────────────────────────────────────────────
-N_TRIALS_LR   = 1
-N_TRIALS_ANN  = 1
-N_TRIALS_LSTM = 1
+N_TRIALS_LR   = 200
+N_TRIALS_ANN  = 200
+N_TRIALS_LSTM = 200
  
 HPO_DB_NAME = "floodnet_hpo_newfilter.db"
 DB = f"sqlite:///{PROJECT_ROOT}/Data_Files/{HPO_DB_NAME}"
